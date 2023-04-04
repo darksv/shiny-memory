@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::convert::identity;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -234,6 +235,8 @@ fn main() -> anyhow::Result<()> {
     let test_size = (0.1 * images.len() as f64).round() as usize;
     let (test, train) = images.split_at(test_size);
 
+    let cache_dir = Path::new(r"D:\yolo\.cache");
+
     for (dir, set) in [
         ("validation", test),
         ("training", train)
@@ -246,37 +249,53 @@ fn main() -> anyhow::Result<()> {
         set.into_par_iter().for_each(|(idx, op)| {
             let (path, anns) = &base_images[*idx];
 
-            let img = image::open(path).unwrap();
-            let src = img.clone();
-            let (out, map_ann): (_, fn(Annotation) -> Annotation) = match op {
-                Transformation::FlipHorizontal => (src.fliph(), fliph),
-                Transformation::FlipVertical => (src.flipv(), flipv),
-                Transformation::Rotate90 => (src.rotate90(), rotate90),
-                Transformation::Rotate270 => (src.rotate270(), rotate270),
-                Transformation::None => (src, |x| x)
-            };
-
-            let anns: Vec<_> = anns.iter().map(|an| map_ann(*an)).collect();
-
             let file_stem = path.file_stem().unwrap().to_str().unwrap();
             let file_name = match op {
                 Transformation::None => format!("{}", file_stem),
                 op => format!("{}_{:?}", file_stem, op),
             };
 
+            let cached = cache_dir
+                .join(&file_name)
+                .with_extension(".jpg");
+
+            if !cached.exists() {
+                let src = image::open(path).unwrap();
+                let out = match op {
+                    Transformation::FlipHorizontal => src.fliph(),
+                    Transformation::FlipVertical => src.flipv(),
+                    Transformation::Rotate90 => src.rotate90(),
+                    Transformation::Rotate270 => src.rotate270(),
+                    Transformation::None => src
+                };
+                out.save_with_format(&cached, ImageFormat::Jpeg).unwrap();
+            }
+
             let image_out = images
                 .join(&file_name)
                 .with_extension("jpg");
+
+            if !image_out.exists() {
+                std::os::windows::fs::symlink_file(&cached, &image_out).unwrap();
+            }
+
+            let map_ann = match op {
+                Transformation::FlipHorizontal => fliph,
+                Transformation::FlipVertical => flipv,
+                Transformation::Rotate90 => rotate90,
+                Transformation::Rotate270 => rotate270,
+                Transformation::None => identity,
+            };
 
             let labels_out = labels
                 .join(&file_name)
                 .with_extension("txt");
 
-            if !image_out.exists() {
-                out.save_with_format(&image_out, ImageFormat::Jpeg).unwrap();
-            }
-
             if !labels_out.exists() {
+                let anns: Vec<_> = anns
+                    .iter()
+                    .map(|an| map_ann(*an))
+                    .collect();
                 save_labels(&labels_out, &anns);
             }
         });
