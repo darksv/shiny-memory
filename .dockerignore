@@ -1,0 +1,5 @@
+fly.toml
+target
+assets/models
+.git
+.idea

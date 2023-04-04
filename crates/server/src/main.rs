@@ -1,0 +1,316 @@
+use std::io::Cursor;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::Context;
+use axum::{http::StatusCode, Json, response::IntoResponse, Router, routing::{get, post}};
+use axum::extract::{Query, State};
+use axum::http::header;
+use image::{DynamicImage, ImageFormat, Rgba};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tract_onnx::onnx;
+use tract_onnx::prelude::{Framework, InferenceModelExt};
+
+use crate::prediction::{Detection, Model};
+
+mod prediction;
+
+#[derive(Clone)]
+struct AppState {
+    model: Arc<Model>,
+    model_version: u32,
+    labels: Vec<String>,
+    font: rusttype::Font<'static>,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
+
+    let model_version = 7;
+    let path = format!(r"./assets/models/best{model_version}.onnx");
+    let labels = [
+
+    ];
+
+    let font = include_bytes!("../../../assets/fonts/Roboto/Roboto-Regular.ttf");
+    let font = rusttype::Font::try_from_bytes(font).expect("invalid font");
+
+    let model = onnx()
+        .model_for_path(path)?
+        .into_optimized()?
+        .into_runnable()?;
+
+    let app = Router::new()
+        .route("/", get(root))
+        .route("/health", get(root))
+        .route("/setup", post(setup))
+        .route("/predict", post(predict_ls))
+        .route("/infer", get(infer))
+        .route("/draw", get(infer_draw))
+        .route("/webhook", post(webhook))
+        .with_state(AppState {
+            model: Arc::new(model),
+            model_version,
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            font,
+        });
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    tracing::info!("listening on {}", addr);
+    axum::Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await?;
+
+    Ok(())
+}
+
+async fn root() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({
+        "status": "UP",
+        "model_dir": "xx",
+        "v2": true
+    })))
+}
+
+async fn setup(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    (StatusCode::OK, Json(json!({
+        "model_version": state.model_version
+    })))
+}
+
+async fn webhook(
+    Json(_payload): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    (StatusCode::OK, Json(json!({})))
+}
+
+fn predicto(state: &AppState, payload: Predict) -> anyhow::Result<(Vec<Detection>, DynamicImage)> {
+    let file = match &payload.tasks[0].data {
+        TaskData::Image { image } => image,
+    };
+
+    let rel_path = file.strip_prefix("/data/").context("invalid path")?;
+    let path = PathBuf::from(r"D:\label-studio\media")
+        .join(rel_path)
+        .canonicalize()?;
+
+    tracing::info!("processing {}", path.display());
+
+    let image = image::open(path)?;
+    let detections = prediction::predict(&state.model, &image)?;
+    Ok((detections, image))
+}
+
+fn to_ls_pos(x: f32) -> f32 {
+    (x * 100.0).clamp(0.0, 100.0)
+}
+
+#[derive(Serialize)]
+struct Inference {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    class_id: usize,
+    confidence: f32,
+}
+
+#[derive(Serialize)]
+struct InferenceResponse {
+    boxes: Vec<Inference>,
+    model_version: u32,
+}
+
+
+#[derive(Deserialize)]
+struct PredictQuery {
+    url: String,
+}
+
+async fn infer_from_url(url: &str, model: &Model) -> anyhow::Result<(Vec<Detection>, DynamicImage)> {
+    tracing::info!("Downloading... {url}");
+    let resp = reqwest::get(url).await?;
+    let data = resp.bytes().await?;
+    tracing::info!("Reading image...");
+    let img = image::load_from_memory(&data)?;
+    tracing::info!("Inferring classes...");
+    let res = prediction::predict(model, &img)?;
+    tracing::info!("Done.");
+    Ok((res, img))
+}
+
+async fn infer(
+    State(state): State<AppState>,
+    Query(payload): Query<PredictQuery>,
+) -> impl IntoResponse {
+    match infer_from_url(&payload.url, &state.model).await {
+        Ok((detections, img)) => {
+            let mut boxes = vec![];
+            for detection in &detections {
+                boxes.push(Inference {
+                    x: to_ls_pos(detection.rect.left() as f32 / img.width() as f32),
+                    y: to_ls_pos(detection.rect.top() as f32 / img.height() as f32),
+                    width: to_ls_pos(detection.rect.width() as f32 / img.width() as f32),
+                    height: to_ls_pos(detection.rect.height() as f32 / img.height() as f32),
+                    class_id: detection.class_id,
+                    confidence: detection.conf,
+                });
+            }
+            (StatusCode::OK, Json(InferenceResponse {
+                boxes,
+                model_version: state.model_version,
+            })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("err {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, ()).into_response()
+        }
+    }
+}
+
+async fn infer_draw(
+    State(state): State<AppState>,
+    Query(payload): Query<PredictQuery>,
+) -> impl IntoResponse {
+    match infer_from_url(&payload.url, &state.model).await {
+        Ok((detections, img)) => {
+            let mut output = img.clone();
+            for detection in detections {
+                imageproc::drawing::draw_hollow_rect_mut(
+                    &mut output,
+                    detection.rect,
+                    Rgba::from([255, 0, 0, 255]),
+                );
+
+                imageproc::drawing::draw_text_mut(
+                    &mut output,
+                    Rgba::from([255, 0, 0, 255]),
+                    detection.rect.left(), detection.rect.top(),
+                    rusttype::Scale::uniform(20.0),
+                    &state.font,
+                    &format!("{} {:.02}", state.labels[detection.class_id], detection.conf),
+                );
+            }
+
+            let mut cursor = Cursor::new(vec![]);
+            output.write_to(&mut cursor, ImageFormat::Png).unwrap();
+
+            (
+                axum::response::AppendHeaders([(header::CONTENT_TYPE, "image/png")]),
+                cursor.into_inner()
+            ).into_response()
+        }
+        Err(e) => {
+            tracing::error!("err {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, ()).into_response()
+        }
+    }
+}
+
+async fn predict_ls(
+    State(state): State<AppState>,
+    Json(payload): Json<Predict>,
+) -> (StatusCode, Json<PredictResults>) {
+    let mut preds = vec![];
+    let score = match predicto(&state, payload) {
+        Ok((dets, img)) => {
+            let mut total_score = 0.0;
+            for detection in &dets {
+                preds.push(PredictResult {
+                    original_width: img.width(),
+                    original_height: img.height(),
+                    image_rotation: 0,
+                    r#type: "rectanglelabels".into(),
+                    value: PredictValue {
+                        x: to_ls_pos(detection.rect.left() as f32 / img.width() as f32),
+                        y: to_ls_pos(detection.rect.top() as f32 / img.height() as f32),
+                        width: to_ls_pos(detection.rect.width() as f32 / img.width() as f32),
+                        height: to_ls_pos(detection.rect.height() as f32 / img.height() as f32),
+                        rotation: 0.0,
+                        rectanglelabels: vec![state.labels[detection.class_id].clone()],
+                    },
+                    score: detection.conf,
+                    from_name: "label".to_string(),
+                    to_name: "image".to_string(),
+                });
+                total_score += detection.conf;
+            }
+
+            if preds.is_empty() {
+                0.0
+            } else {
+                total_score / (preds.len() as f32)
+            }
+        }
+        Err(e) => {
+            tracing::error!("err {}", e);
+            0.0
+        }
+    };
+
+    let res = PredictResults {
+        results: vec![Item { result: preds, score }],
+        model_version: state.model_version,
+    };
+
+    (StatusCode::OK, Json(res))
+}
+
+
+#[derive(Serialize, Debug)]
+struct Item {
+    result: Vec<PredictResult>,
+    score: f32,
+}
+
+#[derive(Serialize, Debug)]
+struct PredictResults {
+    results: Vec<Item>,
+    model_version: u32,
+}
+
+#[derive(Serialize, Debug)]
+struct PredictResult {
+    original_width: u32,
+    original_height: u32,
+    image_rotation: u32,
+    value: PredictValue,
+    r#type: String,
+    from_name: String,
+    to_name: String,
+    score: f32,
+}
+
+#[derive(Serialize, Debug)]
+struct PredictValue {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    rotation: f32,
+    rectanglelabels: Vec<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Predict {
+    tasks: Vec<Task>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Task {
+    data: TaskData,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum TaskData {
+    Image { image: String }
+}
