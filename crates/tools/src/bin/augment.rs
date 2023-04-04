@@ -87,9 +87,26 @@ fn remap_label(label: &str) -> Option<&str> {
     })
 }
 
+fn dir_with_next_seq_number(base_path: impl AsRef<Path>) -> Option<(PathBuf, usize)> {
+    let base_path = base_path.as_ref();
+    let prefix = base_path.file_name()?.to_str()?;
+    let parent_dir = base_path.parent()?;
+
+    let seq = std::fs::read_dir(parent_dir)
+        .unwrap()
+        .flatten()
+        .flat_map(|entry| Some(entry.path()
+            .file_name()?.to_str()?
+            .strip_prefix(prefix)?
+            .parse::<usize>().ok()?))
+        .max()
+        .map_or(1, |max| max + 1);
+
+    Some((parent_dir.join(&format!("{prefix}{seq}")), seq))
+}
+
 fn main() -> anyhow::Result<()> {
-    let n = 12;
-    let output = PathBuf::from(format!(r"D:\yolo\data{n}"));
+    let (dataset_output_dir, n) = dir_with_next_seq_number(r"D:\yolo\data").unwrap();
     let project_path = r"C:\Users\Host\Downloads\project-1-at-2023-04-03-14-36-67286744.json";
 
     let json = fs::read_to_string(project_path)?;
@@ -209,9 +226,9 @@ fn main() -> anyhow::Result<()> {
     // return Ok(());
 
 
-    fs::create_dir_all(&output)?;
+    fs::create_dir_all(&dataset_output_dir)?;
 
-    let dataset_path = output.join("data.yaml");
+    let dataset_path = dataset_output_dir.join("data.yaml");
     let file = fs::File::options()
         .truncate(true)
         .create(true)
@@ -241,8 +258,8 @@ fn main() -> anyhow::Result<()> {
         ("validation", test),
         ("training", train)
     ] {
-        let labels = output.join("labels").join(dir);
-        let images = output.join("images").join(dir);
+        let labels = dataset_output_dir.join("labels").join(dir);
+        let images = dataset_output_dir.join("images").join(dir);
         fs::create_dir_all(&labels).unwrap();
         fs::create_dir_all(&images).unwrap();
 
