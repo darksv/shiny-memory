@@ -8,7 +8,8 @@ use anyhow::Context;
 use axum::{http::StatusCode, Json, response::IntoResponse, Router, routing::{get, post}};
 use axum::extract::{Query, State};
 use axum::http::header;
-use image::{DynamicImage, ImageFormat, Rgba};
+use image::{DynamicImage, ImageFormat};
+use imageproc::rect::Rect;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
@@ -18,6 +19,7 @@ use tract_onnx::prelude::{Framework, InferenceModelExt};
 use crate::prediction::{Detection, Model};
 
 mod prediction;
+mod colors;
 
 #[derive(Clone)]
 struct AppState {
@@ -215,21 +217,29 @@ async fn infer_draw(
 ) -> impl IntoResponse {
     match infer_from_url(&payload.url, &state.model).await {
         Ok((detections, img)) => {
-            let mut output = img.clone();
+            let mut output = img.to_rgb8();
             for detection in detections {
+                let color = colors::get_color(detection.class_id).expect("too many classes?!");
                 imageproc::drawing::draw_hollow_rect_mut(
                     &mut output,
                     detection.rect,
-                    Rgba::from([255, 0, 0, 255]),
+                    color,
                 );
 
+                let text_scale = rusttype::Scale::uniform(20.0);
+                let label = format!("{} — {:.02}", state.labels[detection.class_id], detection.conf);
+                let (w, h) = imageproc::drawing::text_size(text_scale, &state.font, &label);
+
+                let text_bg = Rect::at(detection.rect.left(), detection.rect.top()).of_size(w as u32 + 8, h as u32 + 8);
+                imageproc::drawing::draw_filled_rect_mut(&mut output, text_bg, color);
                 imageproc::drawing::draw_text_mut(
                     &mut output,
-                    Rgba::from([255, 0, 0, 255]),
-                    detection.rect.left(), detection.rect.top(),
-                    rusttype::Scale::uniform(20.0),
+                    colors::optimal_text_color_for_background(color),
+                    detection.rect.left() + 4,
+                    detection.rect.top() + 4,
+                    text_scale,
                     &state.font,
-                    &format!("{} {:.02}", state.labels[detection.class_id], detection.conf),
+                    &label,
                 );
             }
 

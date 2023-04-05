@@ -7,13 +7,12 @@ use tract_onnx::tract_hir::tract_ndarray::Axis;
 
 const IMAGE_SIZE: u32 = 640;
 
-
 pub(crate) type Model = RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
 pub(crate) fn predict(model: &Model, original_image: &DynamicImage) -> TractResult<Vec<Detection>> {
-    let resized_image = original_image.resize(IMAGE_SIZE, IMAGE_SIZE, FilterType::Triangle);
+    let resized_image = original_image.resize(IMAGE_SIZE, IMAGE_SIZE, FilterType::Triangle).to_rgb8();
 
-    let mut input_image = image::RgbaImage::new(IMAGE_SIZE, IMAGE_SIZE);
+    let mut input_image = image::RgbImage::new(IMAGE_SIZE, IMAGE_SIZE);
     let horz_padding = IMAGE_SIZE - resized_image.width();
     let vert_padding = IMAGE_SIZE - resized_image.height();
     image::imageops::overlay(&mut input_image, &resized_image, (horz_padding / 2) as i64, (vert_padding / 2) as i64);
@@ -55,8 +54,11 @@ pub(crate) fn predict(model: &Model, original_image: &DynamicImage) -> TractResu
         let x = (cx - w / 2.0) as i32;
         let y = (cy - h / 2.0) as i32;
 
-        let rect = Rect::at(x, y)
-            .of_size(w as u32, h as u32);
+        let rect = Rect::at(x.max(0), y.max(0))
+            .of_size(
+                (w as u32).min(original_image.width()),
+                (h as u32).min(original_image.height()),
+            );
 
         boxes.push(Detection { rect, conf, class_id });
     }
