@@ -1,4 +1,4 @@
-app = "server"
+app = "mader"
 kill_signal = "SIGINT"
 kill_timeout = 5
 processes = []

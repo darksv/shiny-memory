@@ -3,3 +3,4 @@ target
 assets/models
 .git
 .idea
+!assets/models/best8.onnx

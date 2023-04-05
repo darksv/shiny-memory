@@ -17,7 +17,7 @@ FROM debian:11.3-slim
 WORKDIR app
 
 COPY --from=builder /app/server ./server
-COPY --from=builder /app/best.onnx ./assets/models/best7.onnx
+COPY --from=builder /app/assets ./assets
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates
