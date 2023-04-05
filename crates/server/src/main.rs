@@ -168,6 +168,8 @@ struct InferenceResponse {
 #[derive(Deserialize)]
 struct PredictQuery {
     url: String,
+    #[serde(default)]
+    labels: bool,
 }
 
 async fn infer_from_url(url: &str, model: &Model) -> anyhow::Result<(Vec<Detection>, DynamicImage)> {
@@ -226,17 +228,22 @@ async fn infer_draw(
                     color,
                 );
 
-                let text_scale = rusttype::Scale::uniform(20.0);
-                let label = format!("{} — {:.02}", state.labels[detection.class_id], detection.conf);
+                let padding = 2;
+                let text_scale = rusttype::Scale::uniform(10.0);
+                let label = if payload.labels {
+                    format!("{} — {:.02}", state.labels[detection.class_id], detection.conf)
+                } else {
+                    format!("{} — {:.02}", detection.class_id, detection.conf)
+                };
                 let (w, h) = imageproc::drawing::text_size(text_scale, &state.font, &label);
 
-                let text_bg = Rect::at(detection.rect.left(), detection.rect.top()).of_size(w as u32 + 8, h as u32 + 8);
+                let text_bg = Rect::at(detection.rect.left(), detection.rect.top()).of_size(w as u32 + padding * 2, h as u32 + padding * 2);
                 imageproc::drawing::draw_filled_rect_mut(&mut output, text_bg, color);
                 imageproc::drawing::draw_text_mut(
                     &mut output,
                     colors::optimal_text_color_for_background(color),
-                    detection.rect.left() + 4,
-                    detection.rect.top() + 4,
+                    detection.rect.left() + padding as i32,
+                    detection.rect.top() + padding as i32,
                     text_scale,
                     &state.font,
                     &label,
