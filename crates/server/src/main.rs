@@ -254,7 +254,10 @@ async fn infer_draw(
             output.write_to(&mut cursor, ImageFormat::Png).unwrap();
 
             (
-                axum::response::AppendHeaders([(header::CONTENT_TYPE, "image/png")]),
+                [
+                    (header::CONTENT_TYPE, "image/png"),
+                    (header::CONTENT_DISPOSITION, "inline; filename=\"image.png\"")
+                ],
                 cursor.into_inner()
             ).into_response()
         }
