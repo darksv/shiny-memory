@@ -171,14 +171,14 @@ struct PredictQuery {
 }
 
 async fn infer_from_url(url: &str, model: &Model) -> anyhow::Result<(Vec<Detection>, DynamicImage)> {
-    tracing::info!("Downloading... {url}");
+    tracing::info!("downloading... {url}");
     let resp = reqwest::get(url).await?;
     let data = resp.bytes().await?;
-    tracing::info!("Reading image...");
+    tracing::info!("reading image...");
     let img = image::load_from_memory(&data)?;
-    tracing::info!("Inferring classes...");
+    tracing::info!("inferring classes...");
     let res = prediction::predict(model, &img)?;
-    tracing::info!("Done.");
+    tracing::info!("done.");
     Ok((res, img))
 }
 

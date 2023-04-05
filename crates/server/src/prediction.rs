@@ -23,17 +23,16 @@ pub(crate) fn predict(model: &Model, original_image: &DynamicImage) -> TractResu
         |(_, c, y, x)| {
             input_image.get_pixel(x as u32, y as u32).0[c] as f32 / 255.0
         }).into();
-    tracing::debug!("{:?}", s.elapsed());
+    tracing::info!("converted into tensor in {:?}", s.elapsed());
 
     let s = std::time::Instant::now();
     let result = model.run(tvec![input.into()])?;
-    tracing::debug!("{:?}", s.elapsed());
+    tracing::info!("infer in {:?}", s.elapsed());
 
     let predictions = result[0].to_array_view::<f32>()?;
 
     let longest = std::cmp::max(original_image.width(), original_image.height());
     let scale = longest as f32 / IMAGE_SIZE as f32;
-
 
     let mut boxes = Vec::new();
     for item in predictions.axis_iter(Axis(1)) {
