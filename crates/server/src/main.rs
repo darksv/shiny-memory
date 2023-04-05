@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -10,6 +11,7 @@ use axum::http::header;
 use image::{DynamicImage, ImageFormat, Rgba};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing_subscriber::EnvFilter;
 use tract_onnx::onnx;
 use tract_onnx::prelude::{Framework, InferenceModelExt};
 
@@ -25,25 +27,56 @@ struct AppState {
     font: rusttype::Font<'static>,
 }
 
+fn parse_labels(s: &str) -> anyhow::Result<Vec<&str>> {
+    let mut chars = s.chars();
+    if chars.next() != Some('{') {
+        anyhow::bail!("invalid start");
+    }
+
+    if chars.next_back() != Some('}') {
+        anyhow::bail!("invalid end");
+    }
+
+    let mut labels = Vec::new();
+    for item in chars.as_str().split(", ") {
+        let (key, value) = item.split_once(": ")
+            .context("not a 'key: value' pair")?;
+        let index = key.parse::<usize>()?;
+        let value = value.trim_matches('\'');
+        labels.push((index, value));
+    }
+
+    Ok(labels.into_iter().map(|it| it.1).collect())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_env_filter(EnvFilter::from_str("server=INFO").unwrap())
         .init();
 
-    let model_version = 7;
+    let model_version = 8;
     let path = format!(r"./assets/models/best{model_version}.onnx");
-    let labels = [
 
-    ];
+    let proto = onnx()
+        .proto_model_for_path(&path)?;
 
-    let font = include_bytes!("../../../assets/fonts/Roboto/Roboto-Regular.ttf");
-    let font = rusttype::Font::try_from_bytes(font).expect("invalid font");
+    let labels = proto.metadata_props
+        .into_iter()
+        .find(|it| it.key == "names")
+        .map(|it| it.value)
+        .context("reading labels")?;
+
+    let labels = parse_labels(&labels)?;
+    tracing::info!("found labels: {:?}", labels);
 
     let model = onnx()
         .model_for_path(path)?
         .into_optimized()?
         .into_runnable()?;
+
+    let font = include_bytes!("../../../assets/fonts/Roboto/Roboto-Regular.ttf");
+    let font = rusttype::Font::try_from_bytes(font).expect("invalid font");
 
     let app = Router::new()
         .route("/", get(root))
