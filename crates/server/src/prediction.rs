@@ -1,4 +1,4 @@
-use image::DynamicImage;
+use image::{GenericImageView, Rgb};
 use image::imageops::FilterType;
 use imageproc::rect::Rect;
 use tract_onnx::prelude::*;
@@ -9,8 +9,9 @@ const IMAGE_SIZE: u32 = 640;
 
 pub(crate) type Model = RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
-pub(crate) fn predict(model: &Model, original_image: &DynamicImage) -> TractResult<Vec<Detection>> {
-    let resized_image = original_image.resize(IMAGE_SIZE, IMAGE_SIZE, FilterType::Triangle).to_rgb8();
+pub(crate) fn predict(model: &Model, original_image: &impl GenericImageView<Pixel=Rgb<u8>>) -> TractResult<Vec<Detection>> {
+    let (new_width, new_height) = new_size_to_fit_preserving_aspect_ratio(original_image, IMAGE_SIZE, IMAGE_SIZE);
+    let resized_image = image::imageops::resize(original_image, new_width, new_height, FilterType::Triangle);
 
     let mut input_image = image::RgbImage::new(IMAGE_SIZE, IMAGE_SIZE);
     let horz_padding = IMAGE_SIZE - resized_image.width();
@@ -66,6 +67,23 @@ pub(crate) fn predict(model: &Model, original_image: &DynamicImage) -> TractResu
     Ok(boxes.into_iter().enumerate().filter_map(|(idx, b)| filtered.contains(&idx).then_some(b)).collect())
 }
 
+fn new_size_to_fit_preserving_aspect_ratio(
+    image: &impl GenericImageView<Pixel=Rgb<u8>>,
+    desired_width: u32,
+    desired_height: u32,
+) -> (u32, u32) {
+    let width = image.width() as f32;
+    let height = image.height() as f32;
+    let ratio = width / height;
+    let (new_width, new_height) = if ratio > 1.0 {
+        let scale = width / desired_width as f32;
+        (desired_width, (height / scale).round() as u32)
+    } else {
+        let scale = height / desired_height as f32;
+        ((width / scale).round() as u32, desired_height)
+    };
+    (new_width, new_height)
+}
 
 fn nms(boxes: &[Detection], overlap_threshold: f32, neighbour_threshold: usize) -> Vec<usize> {
     if boxes.is_empty() {
