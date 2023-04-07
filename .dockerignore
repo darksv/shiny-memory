@@ -3,4 +3,8 @@ target
 assets/models
 .git
 .idea
-!assets/models/best8.onnx
+!assets/models/best9.onnx
+*.dll
+*.png
+*.mp4
+Cargo.lock

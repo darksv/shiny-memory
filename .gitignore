@@ -2,3 +2,6 @@
 .idea/
 *.onnx
 /assets/models
+*.dll
+*.mp4
+Cargo.lock

@@ -17,3 +17,15 @@ tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 tract-onnx = "0.19.8"
+tokio-util = { version = "0.7.7", features = ["io"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ffmpeg-next = { version = "6.0.0", default-features = false, features = ["static", "codec",  "format", "software-scaling"] }
+
+# FIXME
+#    configure.arg("--disable-protocols");
+#    configure.arg("--disable-libgme");
+#    configure.arg("--disable-chromaprint");
+#    configure.arg("--disable-librabbitmq");
+[target.'cfg(target_os = "linux")'.dependencies]
+#ffmpeg-next = { version = "6.0.0", default-features = false, features = ["static", "codec",  "format", "software-scaling", "build"] }
