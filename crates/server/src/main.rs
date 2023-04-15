@@ -157,17 +157,11 @@ fn predicto(state: &AppState, payload: Predict) -> anyhow::Result<(Vec<Detection
     Ok((detections, image.into()))
 }
 
-fn to_ls_pos(x: f32) -> f32 {
-    (x * 100.0).clamp(0.0, 100.0)
-}
-
 #[derive(Serialize)]
 struct InferenceBox {
     frame: usize,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+    #[serde(flatten)]
+    rect: BoxRect,
     class_id: usize,
     confidence: f32,
 }
@@ -270,6 +264,28 @@ async fn infer_from_url(
     }
 }
 
+#[derive(Serialize)]
+struct BoxRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+fn rect_to_box_rect(rect: Rect, real_width: u32, real_height: u32) -> BoxRect {
+    let x = rect.left() as f32 / real_width as f32;
+    let y = rect.top() as f32 / real_height as f32;
+    let width = rect.width() as f32 / real_width as f32;
+    let height = rect.height() as f32 / real_height as f32;
+
+    BoxRect {
+        x: x.clamp(0.0, 1.0),
+        y: y.clamp(0.0, 1.0),
+        width: width.clamp(0.0, 1.0 - x),
+        height: height.clamp(0.0, 1.0 - y),
+    }
+}
+
 async fn infer(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
@@ -280,10 +296,7 @@ async fn infer(
             for &(frame, ref detection) in &detections {
                 boxes.push(InferenceBox {
                     frame,
-                    x: to_ls_pos(detection.rect.left() as f32 / width as f32),
-                    y: to_ls_pos(detection.rect.top() as f32 / height as f32),
-                    width: to_ls_pos(detection.rect.width() as f32 / width as f32),
-                    height: to_ls_pos(detection.rect.height() as f32 / height as f32),
+                    rect: rect_to_box_rect(detection.rect, width, height),
                     class_id: detection.class_id,
                     confidence: detection.conf,
                 });
@@ -391,6 +404,10 @@ async fn infer_draw(
             (StatusCode::INTERNAL_SERVER_ERROR, ()).into_response()
         }
     }
+}
+
+fn to_ls_pos(x: f32) -> f32 {
+    (x * 100.0).clamp(0.0, 100.0)
 }
 
 async fn predict_ls(
