@@ -62,8 +62,14 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_str("server=INFO").unwrap())
         .init();
 
-    let model_version = 9;
+    let model_version = std::env::args()
+        .nth(1)
+        .context("missing model version")?
+        .parse()
+        .context("invalid model version")?;
+
     let path = format!(r"./assets/models/best{model_version}.onnx");
+    tracing::info!("Loading model from '{}'", path);
 
     let proto = onnx()
         .proto_model_for_path(&path)?;
