@@ -1,5 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
 
+use std::ops::ControlFlow;
 use std::path::Path;
 
 use anyhow::Context as _;
@@ -172,7 +173,7 @@ pub(crate) fn decode_video<FrameCallback>(
     mut callback: FrameCallback,
 ) -> anyhow::Result<()>
     where
-        FrameCallback: FnMut(usize, &image::flat::View<&[u8], Rgb<u8>>)
+        FrameCallback: FnMut(usize, &image::flat::View<&[u8], Rgb<u8>>) -> ControlFlow<()>
 {
     let mut ictx = format::input(&input_file)?;
 
@@ -195,7 +196,7 @@ pub(crate) fn decode_video<FrameCallback>(
 
     let mut frame_index = 0;
     let mut process_frames =
-        |decoder: &mut decoder::Video| -> anyhow::Result<()> {
+        |decoder: &mut decoder::Video| -> anyhow::Result<ControlFlow<()>> {
             let mut decoded = frame::Video::empty();
             while decoder.receive_frame(&mut decoded).is_ok() {
                 let mut frame = frame::Video::empty();
@@ -208,18 +209,22 @@ pub(crate) fn decode_video<FrameCallback>(
                 };
                 let view = flat_samples.as_view()
                     .context("creating view")?;
-                callback(frame_index, &view);
+                if callback(frame_index, &view).is_break() {
+                    return Ok(ControlFlow::Break(()));
+                }
 
                 frame_index += 1;
             }
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         };
 
     for (stream, packet) in ictx.packets() {
         match stream.parameters().medium() {
             Type::Video if input_video_stream_index == stream.index() => {
                 decoder.send_packet(&packet)?;
-                process_frames(&mut decoder)?;
+                if process_frames(&mut decoder)?.is_break() {
+                    return Ok(());
+                }
             }
             _ => (),
         }

@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Cursor;
 use std::net::SocketAddr;
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -176,6 +177,8 @@ struct PredictQuery {
     url: String,
     #[serde(default)]
     labels: bool,
+    #[serde(default)]
+    single_frame: bool,
 }
 
 enum Media {
@@ -192,6 +195,7 @@ struct InferenceResult {
 async fn infer_from_url(
     url: &str,
     state: &AppState,
+    single_frame: bool,
 ) -> anyhow::Result<InferenceResult> {
     tracing::info!("downloading... {url}");
     let resp = reqwest::get(url).await?;
@@ -203,6 +207,7 @@ async fn infer_from_url(
             fs::write(path, data).context("saving output")?;
             let mut detections = Vec::new();
             let mut frame_size = None;
+            let mut first_frame = None;
 
             tracing::info!("decoding video frames...");
             video::decode_video(path, |idx, frame| {
@@ -210,7 +215,7 @@ async fn infer_from_url(
                     Ok(det) => det,
                     Err(e) => {
                         tracing::warn!("error during prediction: {}", e);
-                        return;
+                        return ControlFlow::Break(());
                     }
                 };
 
@@ -218,12 +223,24 @@ async fn infer_from_url(
                     detections.push((idx, detection));
                 }
                 frame_size = Some(frame.dimensions());
+
+                if single_frame {
+                    let mut image = image::RgbImage::new(frame.width(), frame.height());
+                    image::imageops::overlay(&mut image, frame, 0, 0);
+                    first_frame = Some(image);
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
             }).context("decoding video")?;
             tracing::info!("done.");
 
             Ok(InferenceResult {
                 detections,
-                file: Media::Video(path.into()),
+                file: match first_frame {
+                    Some(frame) => Media::Image(frame.into()),
+                    None => Media::Video(path.into()),
+                },
                 size: frame_size.unwrap_or((0, 0)),
             })
         }
@@ -251,7 +268,7 @@ async fn infer(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
 ) -> impl IntoResponse {
-    match infer_from_url(&payload.url, &state).await {
+    match infer_from_url(&payload.url, &state, payload.single_frame).await {
         Ok(InferenceResult { detections, file: _, size: (width, height) }) => {
             let mut boxes = vec![];
             for &(frame, ref detection) in &detections {
@@ -325,7 +342,7 @@ async fn infer_draw(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
 ) -> impl IntoResponse {
-    match infer_from_url(&payload.url, &state).await {
+    match infer_from_url(&payload.url, &state, payload.single_frame).await {
         Ok(InferenceResult { detections, file: Media::Image(img), size: _ }) => {
             let mut output = img.to_rgb8();
             for (_, detection) in detections {
