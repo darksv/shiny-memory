@@ -58,9 +58,7 @@ fn parse_labels(s: &str) -> anyhow::Result<Vec<&str>> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_str("server=INFO").unwrap())
-        .init();
+    tracing_subscriber::fmt().init();
 
     let model_version = std::env::args()
         .nth(1)

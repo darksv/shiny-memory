@@ -48,6 +48,6 @@ RUN apt-get update \
 
 RUN update-ca-certificates
 
-ENV RUST_LOG=debug
+ENV RUST_LOG="debug,server=INFO"
 ENV RUST_BACKTRACE=full
 CMD ["./server"]
