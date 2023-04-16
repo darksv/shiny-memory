@@ -126,6 +126,7 @@ async fn setup(
     State(state): State<AppState>,
     Json(payload): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
+    tracing::debug!("payload = {:?}", payload);
     (StatusCode::OK, Json(json!({
         "model_version": state.model_version
     })))
