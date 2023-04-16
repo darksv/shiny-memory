@@ -45,7 +45,13 @@ pub(crate) fn predict(model: &Model, original_image: &impl GenericImageView<Pixe
             continue;
         }
 
-        let class_id = classes.iter().copied().position_max_by(f32::total_cmp).unwrap();
+        let class_id = classes
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by(|&(_, a), &(_, b)| a.total_cmp(&b))
+            .map(|it| it.0)
+            .unwrap();
         let cx = (cx - horz_padding as f32 / 2.0) * scale;
         let cy = (cy - vert_padding as f32 / 2.0) * scale;
         let w = w * scale;
