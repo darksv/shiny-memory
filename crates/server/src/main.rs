@@ -16,11 +16,8 @@ use imageproc::rect::Rect;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
-use tracing_subscriber::EnvFilter;
-use tract_onnx::onnx;
-use tract_onnx::prelude::{Framework, InferenceModelExt};
 
-use crate::prediction::{Detection, Model};
+use crate::prediction::Detection;
 
 mod prediction;
 mod colors;
@@ -28,7 +25,7 @@ mod video;
 
 #[derive(Clone)]
 struct AppState {
-    model: Arc<Model>,
+    model: Arc<ort::Session>,
     model_version: u32,
     labels: Vec<String>,
     font: rusttype::Font<'static>,
@@ -69,22 +66,24 @@ async fn main() -> anyhow::Result<()> {
     let path = format!(r"./assets/models/best{model_version}.onnx");
     tracing::info!("Loading model from '{}'", path);
 
-    let proto = onnx()
-        .proto_model_for_path(&path)?;
+    let environment = ort::Environment::builder()
+        .with_name("test")
+        .with_log_level(ort::LoggingLevel::Verbose)
+        .build()?
+        .into_arc();
 
-    let labels = proto.metadata_props
-        .into_iter()
-        .find(|it| it.key == "names")
-        .map(|it| it.value)
-        .context("reading labels")?;
+    let session = ort::SessionBuilder::new(&environment)?
+        .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
+        .with_intra_threads(1)?
+        .with_model_from_file(&path)?;
+
+    let labels = session
+        .metadata()?
+        .custom("names")?
+        .context("missing property")?;
 
     let labels = parse_labels(&labels)?;
     tracing::info!("found labels: {:?}", labels);
-
-    let model = onnx()
-        .model_for_path(path)?
-        .into_optimized()?
-        .into_runnable()?;
 
     let font = include_bytes!("../../../assets/fonts/Roboto/Roboto-Regular.ttf");
     let font = rusttype::Font::try_from_bytes(font).expect("invalid font");
@@ -100,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/draw", get(infer_draw))
         .route("/webhook", post(webhook))
         .with_state(AppState {
-            model: Arc::new(model),
+            model: Arc::new(session),
             model_version,
             labels: labels.iter().map(|l| l.to_string()).collect(),
             font,

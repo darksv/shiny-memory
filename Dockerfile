@@ -3,6 +3,12 @@ FROM rust:1.68-bullseye AS builder
 WORKDIR /app
 COPY . .
 
+ENV ORT_LIB_LOCATION /usr/local/lib/libonnxruntime.so
+ENV ORT_STRATEGY system
+
+RUN ln -s /app/assets/libonnxruntime.so.1.14.1 /usr/local/lib/libonnxruntime.so
+RUN ln -s /app/assets/libonnxruntime.so.1.14.1 /usr/local/lib/libonnxruntime.so.1.14.1
+
 # TODO: clean it up
 RUN --mount=type=cache,target=/app/target \
 		--mount=type=cache,target=/usr/local/cargo/git \
@@ -50,4 +56,6 @@ RUN update-ca-certificates
 
 ENV RUST_LOG="debug,server=INFO"
 ENV RUST_BACKTRACE=full
-CMD ["./server"]
+ENV ORT_DYLIB_PATH /app/assets/libonnxruntime.so.1.14.1
+
+CMD ["./server", "13"]

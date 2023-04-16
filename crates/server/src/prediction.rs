@@ -1,15 +1,13 @@
 use image::{GenericImageView, Rgb};
 use image::imageops::FilterType;
 use imageproc::rect::Rect;
-use tract_onnx::prelude::*;
-use tract_onnx::prelude::tract_itertools::Itertools;
-use tract_onnx::tract_hir::tract_ndarray::Axis;
+use ndarray::Axis;
+use ort::OrtResult;
+use ort::tensor::InputTensor;
 
 const IMAGE_SIZE: u32 = 640;
 
-pub(crate) type Model = RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
-
-pub(crate) fn predict(model: &Model, original_image: &impl GenericImageView<Pixel=Rgb<u8>>) -> TractResult<Vec<Detection>> {
+pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImageView<Pixel=Rgb<u8>>) -> OrtResult<Vec<Detection>> {
     let (new_width, new_height) = new_size_to_fit_preserving_aspect_ratio(original_image, IMAGE_SIZE, IMAGE_SIZE);
     let resized_image = image::imageops::resize(original_image, new_width, new_height, FilterType::Triangle);
 
@@ -19,18 +17,21 @@ pub(crate) fn predict(model: &Model, original_image: &impl GenericImageView<Pixe
     image::imageops::overlay(&mut input_image, &resized_image, (horz_padding / 2) as i64, (vert_padding / 2) as i64);
 
     let s = std::time::Instant::now();
-    let input: Tensor = tract_ndarray::Array4::from_shape_fn(
+    let input = ndarray::Array4::from_shape_fn(
         (1, 3, IMAGE_SIZE as _, IMAGE_SIZE as _),
         |(_, c, y, x)| {
             input_image.get_pixel(x as u32, y as u32).0[c] as f32 / 255.0
-        }).into();
+        }).into_dyn();
     tracing::info!("converted into tensor in {:?}", s.elapsed());
 
+    let input = InputTensor::FloatTensor(input);
+
     let s = std::time::Instant::now();
-    let result = model.run(tvec![input.into()])?;
+    let result = session.run(&[input])?;
     tracing::info!("infer in {:?}", s.elapsed());
 
-    let predictions = result[0].to_array_view::<f32>()?;
+    let predictions = result[0].try_extract::<f32>()?;
+    let predictions = predictions.view();
 
     let longest = std::cmp::max(original_image.width(), original_image.height());
     let scale = longest as f32 / IMAGE_SIZE as f32;

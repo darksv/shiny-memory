@@ -3,7 +3,7 @@ target
 assets/models
 .git
 .idea
-!assets/models/best9.onnx
+!assets/models/best13.onnx
 *.dll
 *.png
 *.mp4
