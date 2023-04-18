@@ -3,7 +3,6 @@ use std::io::Cursor;
 use std::net::SocketAddr;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -138,7 +137,7 @@ async fn webhook(
     (StatusCode::OK, Json(json!({})))
 }
 
-fn predicto(state: &AppState, payload: Predict) -> anyhow::Result<(Vec<Detection>, DynamicImage)> {
+fn predicto(state: &AppState, payload: Predict) -> anyhow::Result<(Vec<Detection>, (u32, u32))> {
     let file = match &payload.tasks[0].data {
         TaskData::Image { image } => image,
     };
@@ -151,8 +150,9 @@ fn predicto(state: &AppState, payload: Predict) -> anyhow::Result<(Vec<Detection
     tracing::info!("processing {}", path.display());
 
     let image = image::open(path)?.to_rgb8();
+    let size = image.dimensions();
     let detections = prediction::predict(&state.model, &image)?;
-    Ok((detections, image.into()))
+    Ok((detections, size))
 }
 
 #[derive(Serialize)]
@@ -414,19 +414,19 @@ async fn predict_ls(
 ) -> (StatusCode, Json<PredictResults>) {
     let mut preds = vec![];
     let score = match predicto(&state, payload) {
-        Ok((dets, img)) => {
+        Ok((dets, (width, height))) => {
             let mut total_score = 0.0;
             for detection in &dets {
                 preds.push(PredictResult {
-                    original_width: img.width(),
-                    original_height: img.height(),
+                    original_width: width,
+                    original_height: height,
                     image_rotation: 0,
                     r#type: "rectanglelabels".into(),
                     value: PredictValue {
-                        x: to_ls_pos(detection.rect.left() as f32 / img.width() as f32),
-                        y: to_ls_pos(detection.rect.top() as f32 / img.height() as f32),
-                        width: to_ls_pos(detection.rect.width() as f32 / img.width() as f32),
-                        height: to_ls_pos(detection.rect.height() as f32 / img.height() as f32),
+                        x: to_ls_pos(detection.rect.left() as f32 / width as f32),
+                        y: to_ls_pos(detection.rect.top() as f32 / height as f32),
+                        width: to_ls_pos(detection.rect.width() as f32 / width as f32),
+                        height: to_ls_pos(detection.rect.height() as f32 / height as f32),
                         rotation: 0.0,
                         rectanglelabels: vec![state.labels[detection.class_id].clone()],
                     },

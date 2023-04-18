@@ -1,5 +1,8 @@
-use image::{GenericImageView, Rgb};
-use image::imageops::FilterType;
+use std::num::NonZeroU32;
+
+use fast_image_resize as fr;
+use image::{GenericImageView, Pixel, Rgb};
+use image::flat::SampleLayout;
 use imageproc::rect::Rect;
 use ndarray::Axis;
 use ort::OrtResult;
@@ -7,14 +10,73 @@ use ort::tensor::InputTensor;
 
 const IMAGE_SIZE: u32 = 640;
 
-pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImageView<Pixel=Rgb<u8>>) -> OrtResult<Vec<Detection>> {
-    let (new_width, new_height) = new_size_to_fit_preserving_aspect_ratio(original_image, IMAGE_SIZE, IMAGE_SIZE);
-    let resized_image = image::imageops::resize(original_image, new_width, new_height, FilterType::Triangle);
+pub(crate) trait GenericImageWithContinuousBuffer<P: Pixel>: GenericImageView<Pixel=P> {
+    fn as_buffer(&self) -> &[P::Subpixel];
+}
+
+impl GenericImageWithContinuousBuffer<Rgb<u8>> for image::RgbImage {
+    fn as_buffer(&self) -> &[u8] {
+        self.as_ref()
+    }
+}
+
+impl GenericImageWithContinuousBuffer<Rgb<u8>> for image::flat::View<&[u8], Rgb<u8>> {
+    fn as_buffer(&self) -> &[u8] {
+        self.image_slice()
+    }
+}
+
+fn resize(img: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> image::RgbImage {
+    let (new_width, new_height) = new_size_to_fit_preserving_aspect_ratio(img, IMAGE_SIZE, IMAGE_SIZE);
+
+    let width = NonZeroU32::new(img.width()).unwrap();
+    let height = NonZeroU32::new(img.height()).unwrap();
+
+    let src_view: fr::ImageView<fr::pixels::U8x3> = fr::ImageView::from_buffer(
+        width, height,
+        img.as_buffer(),
+    ).expect("image with valid size");
+
+    let dst_width = NonZeroU32::new(new_width).unwrap();
+    let dst_height = NonZeroU32::new(new_height).unwrap();
+
+    let mut dst_image = fr::Image::new(
+        dst_width,
+        dst_height,
+        src_view.pixel_type(),
+    );
+
+    let mut dst_view = dst_image.view_mut();
+    let mut resizer = fr::Resizer::new(fr::ResizeAlg::Convolution(fr::FilterType::Bilinear));
+    resizer.resize(&fr::DynamicImageView::from(src_view), &mut dst_view).unwrap();
+    let resized_image = image::FlatSamples {
+        samples: dst_image.buffer(),
+        layout: SampleLayout {
+            channels: 3,
+            channel_stride: 1,
+            width: dst_image.width().get(),
+            width_stride: 3,
+            height: dst_image.height().get(),
+            height_stride: dst_image.width().get() as usize * 3,
+        },
+        color_hint: None,
+    };
+    let resized_image = resized_image.as_view().unwrap();
 
     let mut input_image = image::RgbImage::new(IMAGE_SIZE, IMAGE_SIZE);
     let horz_padding = IMAGE_SIZE - resized_image.width();
     let vert_padding = IMAGE_SIZE - resized_image.height();
     image::imageops::overlay(&mut input_image, &resized_image, (horz_padding / 2) as i64, (vert_padding / 2) as i64);
+
+    input_image
+}
+
+pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> OrtResult<Vec<Detection>> {
+    let s = std::time::Instant::now();
+    let input_image = resize(original_image)?;
+    let horz_padding = IMAGE_SIZE - input_image.width();
+    let vert_padding = IMAGE_SIZE - input_image.height();
+    tracing::info!("resized in {:?}", s.elapsed());
 
     let s = std::time::Instant::now();
     let input = ndarray::Array4::from_shape_fn(
