@@ -307,8 +307,10 @@ async fn infer(
             })).into_response()
         }
         Err(e) => {
-            tracing::error!("err {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, ()).into_response()
+            tracing::warn!("inference error: {}", e);
+            (StatusCode::BAD_REQUEST, Json(json!({
+                "error": e.to_string()
+            }))).into_response()
         }
     }
 }
@@ -399,8 +401,10 @@ async fn infer_draw(
             ).into_response()
         }
         Err(e) => {
-            tracing::error!("inference error: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, ()).into_response()
+            tracing::warn!("inference error: {}", e);
+            (StatusCode::BAD_REQUEST, Json(json!({
+                "error": e.to_string()
+            }))).into_response()
         }
     }
 }
