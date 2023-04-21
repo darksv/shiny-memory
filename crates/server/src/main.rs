@@ -12,6 +12,7 @@ use axum::extract::{Query, State};
 use axum::http::header;
 use image::{DynamicImage, GenericImage, GenericImageView, ImageFormat, Rgb};
 use imageproc::rect::Rect;
+use ort::AllocatorType;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
@@ -72,7 +73,8 @@ async fn main() -> anyhow::Result<()> {
         .into_arc();
 
     let session = ort::SessionBuilder::new(&environment)?
-        .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
+        .with_optimization_level(ort::GraphOptimizationLevel::Level2)?
+        .with_allocator(AllocatorType::Arena)?
         .with_intra_threads(1)?
         .with_model_from_file(&path)?;
 
