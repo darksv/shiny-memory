@@ -278,12 +278,11 @@ fn rect_to_box_rect(rect: Rect, real_width: u32, real_height: u32) -> BoxRect {
     let width = rect.width() as f32 / real_width as f32;
     let height = rect.height() as f32 / real_height as f32;
 
-    BoxRect {
-        x: x.clamp(0.0, 1.0),
-        y: y.clamp(0.0, 1.0),
-        width: width.clamp(0.0, 1.0 - x),
-        height: height.clamp(0.0, 1.0 - y),
-    }
+    let x = x.clamp(0.0, 1.0);
+    let y = y.clamp(0.0, 1.0);
+    let width = width.clamp(0.0, 1.0 - x);
+    let height = height.clamp(0.0, 1.0 - y);
+    BoxRect { x, y, width, height }
 }
 
 async fn infer(
