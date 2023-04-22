@@ -1,10 +1,6 @@
 [workspace]
+resolver = "2"
 members = [
     "crates/server",
     "crates/tools"
 ]
-
-# FIXME
-[patch.crates-io]
-ffmpeg-sys-next = { path = "crates/rust-ffmpeg-sys" }
-ffmpeg-next = { path = "crates/rust-ffmpeg" }
