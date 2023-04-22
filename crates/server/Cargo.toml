@@ -19,5 +19,22 @@ tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 tokio-util = { version = "0.7.7", features = ["io"] }
 ndarray = "0.15.6"
 fast_image_resize = "2.7.0"
-ffmpeg-next = { version = "6.0.0", default-features = false, features = ["codec", "format", "software-scaling"] }
-ort = { version = "1.14.6" }
+
+[target.'cfg(windows)'.dependencies.ort]
+version = "1.14.6"
+
+[target.'cfg(windows)'.dependencies.ffmpeg-next]
+version = "6.0.0"
+default-features = false
+features = ["codec", "format", "software-scaling"]
+
+[target.'cfg(not(windows))'.dependencies.ort]
+version = "1.14.6"
+default-features = false
+features = ["half", "load-dynamic"]
+
+[target.'cfg(not(windows))'.dependencies.ffmpeg-next]
+version = "6.0.0"
+default-features = false
+features = ["static", "codec", "format", "software-scaling", "build"]
+
