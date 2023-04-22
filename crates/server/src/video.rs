@@ -74,7 +74,8 @@ pub(crate) fn overlay_video<FrameCallback>(
 
     let mut output_video_stream = octx.stream_mut(output_video_index).unwrap();
 
-    let codec = encoder::find(codec::Id::H264).unwrap();
+    let codec = encoder::find(codec::Id::H264)
+        .ok_or(ffmpeg::Error::EncoderNotFound)?;
     let context_encoder = unsafe { codec::context::Context::wrap(ffi::avcodec_alloc_context3(codec.as_ptr()), None) };
     let mut encoder = context_encoder
         .encoder()
