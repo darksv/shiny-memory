@@ -73,7 +73,7 @@ fn resize(img: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> image::RgbIma
 
 pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> OrtResult<Vec<Detection>> {
     let s = std::time::Instant::now();
-    let input_image = resize(original_image)?;
+    let input_image = resize(original_image);
     let horz_padding = IMAGE_SIZE - input_image.width();
     let vert_padding = IMAGE_SIZE - input_image.height();
     tracing::info!("resized in {:?}", s.elapsed());
