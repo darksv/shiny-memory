@@ -7,4 +7,5 @@ assets/models
 *.dll
 *.png
 *.mp4
+*.bin
 Cargo.lock

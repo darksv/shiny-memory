@@ -1,21 +1,24 @@
-use std::fs;
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{BufReader, Cursor};
 use std::net::SocketAddr;
 use std::ops::ControlFlow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use axum::{http::StatusCode, Json, response::IntoResponse, Router, routing::{get, post}};
-use axum::body::StreamBody;
+use axum::body::{Bytes, StreamBody};
 use axum::extract::{Query, State};
 use axum::http::header;
+use futures_util::{Stream, StreamExt};
 use image::{DynamicImage, GenericImage, GenericImageView, ImageFormat, Rgb};
 use imageproc::rect::Rect;
 use ort::AllocatorType;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
+use tokio_util::sync::CancellationToken;
 
 use crate::prediction::Detection;
 
@@ -179,6 +182,8 @@ struct PredictQuery {
     labels: bool,
     #[serde(default)]
     single_frame: bool,
+    #[serde(default)]
+    step: Option<usize>,
 }
 
 enum Media {
@@ -192,76 +197,140 @@ struct InferenceResult {
     size: (u32, u32),
 }
 
+async fn save_stream_to_file(
+    input_file_path: &Path,
+    mut stream: impl Stream<Item=reqwest::Result<Bytes>> + Unpin,
+) -> anyhow::Result<()> {
+    let mut input_file = tokio::fs::File::create(input_file_path).await?;
+    while let Some(item) = stream.next().await {
+        tokio::io::copy(&mut item?.as_ref(), &mut input_file).await?;
+    }
+    Ok(())
+}
+
+const PROCESSING_TIMEOUT: Duration = Duration::from_secs(45);
+
 async fn infer_from_url(
     url: &str,
     state: &AppState,
     single_frame: bool,
+    step: usize,
 ) -> anyhow::Result<InferenceResult> {
     tracing::info!("downloading... {url}");
-    let resp = reqwest::get(url).await?;
-    match resp.headers().get(header::CONTENT_TYPE).and_then(|it| it.to_str().ok()) {
-        Some(content_type) if content_type.starts_with("video/") => {
-            let data = resp.bytes().await?;
-            let path = "input.mp4";
+    let response = reqwest::get(url).await?;
+    let is_video = response.headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|it| it.to_str().ok())
+        .is_some_and(|it| it.starts_with("video/"));
 
-            fs::write(path, data).context("saving output")?;
-            let mut detections = Vec::new();
-            let mut frame_size = None;
-            let mut first_frame = None;
+    let input_file_path = Path::new("input.bin");
+    save_stream_to_file(&input_file_path, response.bytes_stream()).await?;
 
-            tracing::info!("decoding video frames...");
-            video::decode_video(path, |idx, frame| {
-                let result = match prediction::predict(&state.model, frame) {
-                    Ok(det) => det,
-                    Err(e) => {
-                        tracing::warn!("error during prediction: {}", e);
-                        return ControlFlow::Break(());
-                    }
-                };
+    if is_video {
+        let token_source = CancellationToken::new();
+        let token = token_source.clone();
+        let model = state.model.clone();
 
-                for detection in result {
-                    detections.push((idx, detection));
-                }
-                frame_size = Some(frame.dimensions());
+        let handle = tokio::task::spawn_blocking(move || {
+            infer_video(input_file_path, InferVideoConfig { step, single_frame }, &model, token)
+        });
 
-                if single_frame {
-                    let mut image = image::RgbImage::new(frame.width(), frame.height());
-                    image::imageops::overlay(&mut image, frame, 0, 0);
-                    first_frame = Some(image);
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            }).context("decoding video")?;
-            tracing::info!("done.");
+        let _watch_handle = tokio::task::spawn(async move {
+            tokio::time::sleep(PROCESSING_TIMEOUT).await;
+            tracing::info!("timeout");
+            token_source.cancel();
+        });
 
-            Ok(InferenceResult {
-                detections,
-                file: match first_frame {
-                    Some(frame) => Media::Image(frame.into()),
-                    None => Media::Video(path.into()),
-                },
-                size: frame_size.unwrap_or((0, 0)),
-            })
-        }
-        _ => {
-            let data = resp.bytes().await?;
-            tracing::info!("reading image...");
-            let img = image::load_from_memory(&data)?.to_rgb8();
-            tracing::info!("inferring classes...");
-            let detections = prediction::predict(&state.model, &img)?
-                .into_iter()
-                .map(|d| (0, d))
-                .collect();
-            tracing::info!("done.");
+        let infer_result = handle.await
+            .context("task join error")?
+            .context("video inference task")?;
 
-            Ok(InferenceResult {
-                detections,
-                size: img.dimensions(),
-                file: Media::Image(img.into()),
-            })
-        }
+        Ok(InferenceResult {
+            detections: infer_result.detections,
+            file: match infer_result.first_frame {
+                Some(frame) => Media::Image(frame.into()),
+                None => Media::Video(input_file_path.into()),
+            },
+            size: infer_result.frame_size.unwrap_or((0, 0)),
+        })
+    } else {
+        let file = File::open(input_file_path)?;
+        let buf = BufReader::new(file);
+        let img = image::io::Reader::new(buf)
+            .with_guessed_format()?
+            .decode()?
+            .into_rgb8();
+
+        tracing::info!("inferring classes...");
+        let detections = prediction::predict(&state.model, &img)?
+            .into_iter()
+            .map(|d| (0, d))
+            .collect();
+        tracing::info!("done.");
+
+        Ok(InferenceResult {
+            detections,
+            size: img.dimensions(),
+            file: Media::Image(img.into()),
+        })
     }
+}
+
+struct InferVideoConfig {
+    step: usize,
+    single_frame: bool,
+}
+
+struct VideoInferenceResult {
+    detections: Vec<(usize, Detection)>,
+    first_frame: Option<image::RgbImage>,
+    frame_size: Option<(u32, u32)>,
+}
+
+fn infer_video(
+    input_path: &Path,
+    config: InferVideoConfig,
+    model: &ort::Session,
+    token: CancellationToken,
+) -> anyhow::Result<VideoInferenceResult> {
+    let mut detections = Vec::new();
+    let mut frame_size = None;
+    let mut first_frame = None;
+
+    tracing::info!("decoding video frames...");
+    video::decode_video(input_path, |frame_idx, frame| {
+        if token.is_cancelled() {
+            tracing::warn!("cancelled decoder task");
+            return ControlFlow::Break(());
+        }
+
+        if frame_idx % config.step == 0 {
+            let result = match prediction::predict(&model, frame) {
+                Ok(det) => det,
+                Err(e) => {
+                    tracing::warn!("error during prediction: {}", e);
+                    return ControlFlow::Break(());
+                }
+            };
+            for detection in result {
+                detections.push((frame_idx, detection));
+            }
+        }
+
+        frame_size = Some(frame.dimensions());
+
+        if config.single_frame {
+            let mut image = image::RgbImage::new(frame.width(), frame.height());
+            image::imageops::overlay(&mut image, frame, 0, 0);
+            first_frame = Some(image);
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }).context("decoding video")?;
+
+    tracing::info!("done.");
+    Ok(VideoInferenceResult { detections, first_frame, frame_size })
 }
 
 #[derive(Serialize)]
@@ -289,7 +358,7 @@ async fn infer(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
 ) -> impl IntoResponse {
-    match infer_from_url(&payload.url, &state, payload.single_frame).await {
+    match infer_from_url(&payload.url, &state, payload.single_frame, payload.step.unwrap_or(1)).await {
         Ok(InferenceResult { detections, file: _, size: (width, height) }) => {
             let mut boxes = vec![];
             for &(frame, ref detection) in &detections {
@@ -362,7 +431,7 @@ async fn infer_draw(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
 ) -> impl IntoResponse {
-    match infer_from_url(&payload.url, &state, payload.single_frame).await {
+    match infer_from_url(&payload.url, &state, payload.single_frame, payload.step.unwrap_or(1)).await {
         Ok(InferenceResult { detections, file: Media::Image(img), size: _ }) => {
             let mut output = img.to_rgb8();
             for (_, detection) in detections {
