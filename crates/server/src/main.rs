@@ -241,32 +241,35 @@ async fn infer_from_url(
             token_source.cancel();
         });
 
-        let infer_result = handle.await
-            .context("task join error")?
-            .context("video inference task")?;
-
-        Ok(infer_result)
+        handle.await.context("task join error")?
     } else {
-        let file = File::open(input_file_path)?;
-        let buf = BufReader::new(file);
-        let img = image::io::Reader::new(buf)
-            .with_guessed_format()?
-            .decode()?
-            .into_rgb8();
-
-        tracing::info!("inferring classes...");
-        let detections = prediction::predict(&state.model, &img)?
-            .into_iter()
-            .map(|d| (0, d))
-            .collect();
-        tracing::info!("done.");
-
-        Ok(InferenceResult {
-            detections,
-            size: img.dimensions(),
-            file: Media::Image(img.into()),
-        })
+        infer_image(input_file_path, &state.model)
     }
+}
+
+fn infer_image(
+    input_path: &Path,
+    model: &ort::Session,
+) -> anyhow::Result<InferenceResult> {
+    let file = File::open(input_path)?;
+    let buf = BufReader::new(file);
+    let img = image::io::Reader::new(buf)
+        .with_guessed_format()?
+        .decode()?
+        .into_rgb8();
+
+    tracing::info!("inferring classes...");
+    let detections = prediction::predict(model, &img)?
+        .into_iter()
+        .map(|d| (0, d))
+        .collect();
+    tracing::info!("done.");
+
+    Ok(InferenceResult {
+        detections,
+        size: img.dimensions(),
+        file: Media::Image(img.into()),
+    })
 }
 
 struct InferVideoConfig {
