@@ -26,7 +26,13 @@ impl GenericImageWithContinuousBuffer<Rgb<u8>> for image::flat::View<&[u8], Rgb<
     }
 }
 
-fn resize(img: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> image::RgbImage {
+struct ResizingInfo {
+    image: image::RgbImage,
+    horz_padding: u32,
+    vert_padding: u32,
+}
+
+fn resize(img: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> ResizingInfo {
     let (new_width, new_height) = new_size_to_fit_preserving_aspect_ratio(img, IMAGE_SIZE, IMAGE_SIZE);
 
     let width = NonZeroU32::new(img.width()).unwrap();
@@ -63,26 +69,24 @@ fn resize(img: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> image::RgbIma
     };
     let resized_image = resized_image.as_view().unwrap();
 
-    let mut input_image = image::RgbImage::new(IMAGE_SIZE, IMAGE_SIZE);
+    let mut image = image::RgbImage::new(IMAGE_SIZE, IMAGE_SIZE);
     let horz_padding = IMAGE_SIZE - resized_image.width();
     let vert_padding = IMAGE_SIZE - resized_image.height();
-    image::imageops::overlay(&mut input_image, &resized_image, (horz_padding / 2) as i64, (vert_padding / 2) as i64);
+    image::imageops::overlay(&mut image, &resized_image, (horz_padding / 2) as i64, (vert_padding / 2) as i64);
 
-    input_image
+    ResizingInfo { image, horz_padding, vert_padding }
 }
 
 pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> OrtResult<Vec<Detection>> {
     let s = std::time::Instant::now();
-    let input_image = resize(original_image);
-    let horz_padding = IMAGE_SIZE - input_image.width();
-    let vert_padding = IMAGE_SIZE - input_image.height();
+    let ResizingInfo { image, vert_padding, horz_padding } = resize(original_image);
     tracing::info!("resized in {:?}", s.elapsed());
 
     let s = std::time::Instant::now();
     let input = ndarray::Array4::from_shape_fn(
         (1, 3, IMAGE_SIZE as _, IMAGE_SIZE as _),
         |(_, c, y, x)| {
-            input_image.get_pixel(x as u32, y as u32).0[c] as f32 / 255.0
+            image.get_pixel(x as u32, y as u32).0[c] as f32 / 255.0
         }).into_dyn();
     tracing::info!("converted into tensor in {:?}", s.elapsed());
 
