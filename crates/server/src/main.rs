@@ -245,14 +245,7 @@ async fn infer_from_url(
             .context("task join error")?
             .context("video inference task")?;
 
-        Ok(InferenceResult {
-            detections: infer_result.detections,
-            file: match infer_result.first_frame {
-                Some(frame) => Media::Image(frame.into()),
-                None => Media::Video(input_file_path.into()),
-            },
-            size: infer_result.frame_size.unwrap_or((0, 0)),
-        })
+        Ok(infer_result)
     } else {
         let file = File::open(input_file_path)?;
         let buf = BufReader::new(file);
@@ -281,18 +274,12 @@ struct InferVideoConfig {
     single_frame: bool,
 }
 
-struct VideoInferenceResult {
-    detections: Vec<(usize, Detection)>,
-    first_frame: Option<image::RgbImage>,
-    frame_size: Option<(u32, u32)>,
-}
-
 fn infer_video(
     input_path: &Path,
     config: InferVideoConfig,
     model: &ort::Session,
     token: CancellationToken,
-) -> anyhow::Result<VideoInferenceResult> {
+) -> anyhow::Result<InferenceResult> {
     let mut detections = Vec::new();
     let mut frame_size = None;
     let mut first_frame = None;
@@ -330,7 +317,15 @@ fn infer_video(
     }).context("decoding video")?;
 
     tracing::info!("done.");
-    Ok(VideoInferenceResult { detections, first_frame, frame_size })
+
+    Ok(InferenceResult {
+        detections,
+        file: match first_frame {
+            Some(frame) => Media::Image(frame.into()),
+            None => Media::Video(input_path.into()),
+        },
+        size: frame_size.unwrap_or((0, 0)),
+    })
 }
 
 #[derive(Serialize)]
