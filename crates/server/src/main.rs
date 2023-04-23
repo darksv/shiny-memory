@@ -252,14 +252,24 @@ fn infer_image(
     model: &ort::Session,
 ) -> anyhow::Result<InferenceResult> {
     let file = File::open(input_path)?;
-    let buf = BufReader::new(file);
-    let img = image::io::Reader::new(buf)
+    let (width, height) = image::io::Reader::new(BufReader::new(file))
+        .with_guessed_format()?
+        .into_dimensions()?;
+
+    let raw_size_in_bytes = width * height * 3;
+    tracing::info!("image dimensions = {width}x{height} = {raw_size_in_bytes}B");
+    if raw_size_in_bytes >= 25_000_000 {
+        anyhow::bail!("image is too big: {width}x{height}");
+    }
+
+    let file = File::open(input_path)?;
+    let image = image::io::Reader::new(BufReader::new(file))
         .with_guessed_format()?
         .decode()?
         .into_rgb8();
 
     tracing::info!("inferring classes...");
-    let detections = prediction::predict(model, &img)?
+    let detections = prediction::predict(model, &image)?
         .into_iter()
         .map(|d| (0, d))
         .collect();
@@ -267,8 +277,8 @@ fn infer_image(
 
     Ok(InferenceResult {
         detections,
-        size: img.dimensions(),
-        file: Media::Image(img.into()),
+        size: image.dimensions(),
+        file: Media::Image(image.into()),
     })
 }
 
