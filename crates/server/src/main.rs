@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
     let session = ort::SessionBuilder::new(&environment)?
         .with_optimization_level(ort::GraphOptimizationLevel::Level2)?
         .with_allocator(AllocatorType::Arena)?
-        .with_intra_threads(1)?
+        .with_parallel_execution(true)?
         .with_model_from_file(&path)?;
 
     let labels = session
