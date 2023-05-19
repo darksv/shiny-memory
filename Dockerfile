@@ -38,6 +38,7 @@ RUN --mount=type=cache,target=/app/target \
         yasm \
         zlib1g-dev; \
         rustup set profile minimal; \
+        rustup update nightly; \
         rustup default nightly; \
 	 	cargo build --release --bin server ; \
 		objcopy --compress-debug-sections target/release/server ./server
