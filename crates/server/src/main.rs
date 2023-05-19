@@ -20,11 +20,15 @@ use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::delayed_response::DelayedResponse;
 use crate::prediction::Detection;
+use crate::utils::TempFile;
 
 mod prediction;
 mod colors;
 mod video;
+mod delayed_response;
+mod utils;
 
 #[derive(Clone)]
 struct AppState {
@@ -167,6 +171,7 @@ struct InferenceBox {
     #[serde(flatten)]
     rect: BoxRect,
     class_id: usize,
+    class_name: Option<String>,
     confidence: f32,
 }
 
@@ -174,6 +179,7 @@ struct InferenceBox {
 struct InferenceResponse {
     boxes: Vec<InferenceBox>,
     model_version: u32,
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -185,6 +191,8 @@ struct PredictQuery {
     single_frame: bool,
     #[serde(default)]
     step: Option<usize>,
+    #[serde(default)]
+    timeout: bool,
 }
 
 enum Media {
@@ -216,6 +224,7 @@ async fn infer_from_url(
     state: &AppState,
     single_frame: bool,
     step: usize,
+    timeout: bool,
 ) -> anyhow::Result<InferenceResult> {
     tracing::info!("downloading... {url}");
     let response = reqwest::get(url).await?;
@@ -224,7 +233,8 @@ async fn infer_from_url(
         .and_then(|it| it.to_str().ok())
         .is_some_and(|it| it.starts_with("video/"));
 
-    let input_file_path = Path::new("input.bin");
+    let input_file_path = TempFile::new();
+    tracing::info!("Saving as {}", input_file_path.display());
     save_stream_to_file(&input_file_path, response.bytes_stream()).await?;
 
     if is_video {
@@ -233,18 +243,20 @@ async fn infer_from_url(
         let model = state.model.clone();
 
         let handle = tokio::task::spawn_blocking(move || {
-            infer_video(input_file_path, InferVideoConfig { step, single_frame }, &model, token)
+            infer_video(&input_file_path, InferVideoConfig { step, single_frame }, &model, token)
         });
 
-        let _watch_handle = tokio::task::spawn(async move {
-            tokio::time::sleep(PROCESSING_TIMEOUT).await;
-            tracing::info!("timeout");
-            token_source.cancel();
-        });
+        if timeout {
+            let _watch_handle = tokio::task::spawn(async move {
+                tokio::time::sleep(PROCESSING_TIMEOUT).await;
+                tracing::info!("timeout");
+                token_source.cancel();
+            });
+        }
 
         handle.await.context("task join error")?
     } else {
-        infer_image(input_file_path, &state.model)
+        infer_image(&input_file_path, &state.model)
     }
 }
 
@@ -382,30 +394,35 @@ async fn infer(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
 ) -> impl IntoResponse {
-    match infer_from_url(&payload.url, &state, payload.single_frame, payload.step.unwrap_or(1)).await {
-        Ok(InferenceResult { detections, file: _, size: (width, height) }) => {
-            let mut boxes = vec![];
-            for &(frame, ref detection) in &detections {
-                boxes.push(InferenceBox {
-                    frame,
-                    rect: rect_to_box_rect(detection.rect, width, height),
-                    class_id: detection.class_id,
-                    confidence: detection.conf,
-                });
-            }
+    (StatusCode::OK, [(header::CONTENT_TYPE, "application/json")], DelayedResponse::new(async move {
+        match infer_from_url(&payload.url, &state, payload.single_frame, payload.step.unwrap_or(1), payload.timeout).await {
+            Ok(InferenceResult { detections, file: _, size: (width, height) }) => {
+                let mut boxes = vec![];
+                for &(frame, ref detection) in &detections {
+                    boxes.push(InferenceBox {
+                        frame,
+                        rect: rect_to_box_rect(detection.rect, width, height),
+                        class_id: detection.class_id,
+                        class_name: state.labels.get(detection.class_id).cloned(),
+                        confidence: detection.conf,
+                    });
+                }
 
-            (StatusCode::OK, Json(InferenceResponse {
-                boxes,
-                model_version: state.model_version,
-            })).into_response()
+                InferenceResponse {
+                    boxes,
+                    model_version: state.model_version,
+                    error: None,
+                }
+            }
+            Err(e) => {
+                InferenceResponse {
+                    boxes: Vec::new(),
+                    model_version: state.model_version,
+                    error: Some(e.to_string()),
+                }
+            }
         }
-        Err(e) => {
-            tracing::warn!("inference error: {}", e);
-            (StatusCode::BAD_REQUEST, Json(json!({
-                "error": e.to_string()
-            }))).into_response()
-        }
-    }
+    }))
 }
 
 fn draw_box(
@@ -455,7 +472,7 @@ async fn infer_draw(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
 ) -> impl IntoResponse {
-    match infer_from_url(&payload.url, &state, payload.single_frame, payload.step.unwrap_or(1)).await {
+    match infer_from_url(&payload.url, &state, payload.single_frame, payload.step.unwrap_or(1), true).await {
         Ok(InferenceResult { detections, file: Media::Image(img), size: _ }) => {
             let mut output = img.to_rgb8();
             for (_, detection) in detections {
