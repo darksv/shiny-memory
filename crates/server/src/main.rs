@@ -1,3 +1,5 @@
+#![feature(array_chunks)]
+
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 use std::net::SocketAddr;
@@ -12,6 +14,7 @@ use axum::body::{Bytes, StreamBody};
 use axum::extract::{Query, State};
 use axum::http::header;
 use futures_util::{Stream, StreamExt};
+use gif::ColorOutput;
 use image::{DynamicImage, GenericImage, GenericImageView, ImageFormat, Rgb};
 use imageproc::rect::Rect;
 use ort::AllocatorType;
@@ -198,6 +201,7 @@ struct PredictQuery {
 enum Media {
     Image(DynamicImage),
     Video(PathBuf),
+    Unknown,
 }
 
 struct InferenceResult {
@@ -228,36 +232,102 @@ async fn infer_from_url(
 ) -> anyhow::Result<InferenceResult> {
     tracing::info!("downloading... {url}");
     let response = reqwest::get(url).await?;
-    let is_video = response.headers()
+    let mime_type = response.headers()
         .get(header::CONTENT_TYPE)
         .and_then(|it| it.to_str().ok())
-        .is_some_and(|it| it.starts_with("video/"));
+        .map(|it| it.to_string());
 
     let input_file_path = TempFile::new();
     tracing::info!("Saving as {}", input_file_path.display());
     save_stream_to_file(&input_file_path, response.bytes_stream()).await?;
 
-    if is_video {
-        let token_source = CancellationToken::new();
-        let token = token_source.clone();
-        let model = state.model.clone();
+    let token_source = CancellationToken::new();
+    let token = token_source.clone();
+    let model = state.model.clone();
 
-        let handle = tokio::task::spawn_blocking(move || {
-            infer_video(&input_file_path, InferVideoConfig { step, single_frame }, &model, token)
+    if timeout {
+        tokio::task::spawn(async move {
+            tokio::time::sleep(PROCESSING_TIMEOUT).await;
+            tracing::info!("timeout");
+            token_source.cancel();
         });
+    }
 
-        if timeout {
-            let _watch_handle = tokio::task::spawn(async move {
-                tokio::time::sleep(PROCESSING_TIMEOUT).await;
-                tracing::info!("timeout");
-                token_source.cancel();
+    match mime_type.as_deref() {
+        Some("image/gif") => {
+            let handle = tokio::task::spawn_blocking(move || {
+                infer_gif(&input_file_path, &model, token)
             });
+
+            handle.await.context("task join error")?
+        }
+        Some(v) if v.starts_with("image/") => infer_image(&input_file_path, &state.model),
+        _ => {
+            let handle = tokio::task::spawn_blocking(move || {
+                infer_video(&input_file_path, InferVideoConfig { step, single_frame }, &model, token)
+            });
+
+            handle.await.context("task join error")?
+        }
+    }
+}
+
+fn infer_gif(
+    input_path: &Path,
+    model: &ort::Session,
+    token: CancellationToken,
+) -> anyhow::Result<InferenceResult> {
+    let file = File::open(input_path)?;
+    let reader = BufReader::new(file);
+
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(ColorOutput::Indexed);
+    let mut decoder = options.read_info(reader)?;
+    let mut buf = Vec::new();
+
+    let mut detections = Vec::new();
+    let mut frame_idx = 0;
+    let mut size = (0, 0);
+
+    let mut screen = gif_dispose::Screen::new_decoder(&decoder);
+
+    while let Some(frame) = decoder.read_next_frame()? {
+        if token.is_cancelled() {
+            break;
         }
 
-        handle.await.context("task join error")?
-    } else {
-        infer_image(&input_file_path, &state.model)
+        screen.blit_frame(&frame)?;
+
+        buf.clear();
+        buf.reserve(usize::from(frame.width) * usize::from(frame.height) * 3);
+        buf.extend(screen.pixels.as_ref().pixels().flat_map(|p| [p.r, p.g, p.b]));
+
+        let layout = image::flat::SampleLayout {
+            channels: 3,
+            channel_stride: 1,
+            width: frame.width.into(),
+            width_stride: 3,
+            height: frame.height.into(),
+            height_stride: usize::from(frame.width) * 3,
+        };
+        let samples = image::flat::FlatSamples {
+            samples: &buf,
+            layout,
+            color_hint: None,
+        };
+        let image = samples.as_view()?;
+        for detection in prediction::predict(model, &image)? {
+            detections.push((frame_idx, detection));
+        }
+        size = (frame.width as u32, frame.height as u32);
+        frame_idx += 1;
     }
+
+    Ok(InferenceResult {
+        detections,
+        file: Media::Unknown,
+        size,
+    })
 }
 
 fn infer_image(
@@ -509,6 +579,9 @@ async fn infer_draw(
                 ],
                 body
             ).into_response()
+        }
+        Ok(InferenceResult { detections: _, file: Media::Unknown, size: _ }) => {
+            unimplemented!()
         }
         Err(e) => {
             tracing::warn!("inference error: {}", e);
