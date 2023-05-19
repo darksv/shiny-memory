@@ -100,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/setup", post(setup))
         .route("/predict", post(predict_ls))
         .route("/infer", get(infer))
+        .route("/model", get(model_info))
         .route("/draw", get(infer_draw))
         .route("/webhook", post(webhook))
         .with_state(AppState {
@@ -360,6 +361,21 @@ fn rect_to_box_rect(rect: Rect, real_width: u32, real_height: u32) -> BoxRect {
     let width = width.clamp(0.0, 1.0 - x);
     let height = height.clamp(0.0, 1.0 - y);
     BoxRect { x, y, width, height }
+}
+
+#[derive(Serialize)]
+struct ModelInfoResponse {
+    version: u32,
+    classes: Vec<String>,
+}
+
+async fn model_info(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/json")], Json(ModelInfoResponse {
+        version: state.model_version,
+        classes: state.labels.clone(),
+    }))
 }
 
 async fn infer(
