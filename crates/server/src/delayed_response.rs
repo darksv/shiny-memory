@@ -1,19 +1,22 @@
 use std::cell::Cell;
 use std::future::Future;
-use std::pin::{Pin};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
 use std::time::Duration;
+
 use axum::body::{Bytes, HttpBody};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use futures_util::future::BoxFuture;
+use tokio::sync::oneshot;
+
+type Item = Option<Result<Bytes, axum::Error>>;
 
 pub(crate) struct DelayedResponse<T> {
-    generate: Option<BoxFuture<'static, T>>,
-    tx: Option<tokio::sync::oneshot::Sender<Option<Result<Bytes, axum::Error>>>>,
-    rx: tokio::sync::oneshot::Receiver<Option<Result<Bytes, axum::Error>>>,
+    future_with_tx: Option<(BoxFuture<'static, T>, oneshot::Sender<Item>)>,
+    rx: oneshot::Receiver<Item>,
     done: Arc<AtomicBool>,
     last_send: Cell<std::time::Instant>,
     interval: Duration,
@@ -21,14 +24,13 @@ pub(crate) struct DelayedResponse<T> {
 
 impl<T: Send + IntoResponse> DelayedResponse<T> {
     pub(crate) fn new(f: impl Future<Output=T> + Send + 'static) -> Self {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         Self {
-            generate: Some(Box::pin(f)),
-            tx: Some(tx),
+            future_with_tx: Some((Box::pin(f), tx)),
             rx,
             done: Arc::new(AtomicBool::new(false)),
             last_send: Cell::new(std::time::Instant::now()),
-            interval: Duration::from_secs(5),
+            interval: Duration::from_secs(20),
         }
     }
 }
@@ -51,31 +53,29 @@ impl<T> HttpBody for DelayedResponse<T>
     ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
         if self.last_send.get().elapsed() >= self.interval {
             self.last_send.set(std::time::Instant::now());
-            tracing::debug!("sending keep-alive...");
             return Poll::Ready(Some(Ok(Bytes::from("\n"))));
         }
 
-        if let Some(fut) = self.generate.take() {
-            let tx = self.tx.take().unwrap();
+        if let Some((future, tx)) = self.future_with_tx.take() {
             let waker = cx.waker().clone();
-            tokio::spawn(async move {
-                let result = fut.await;
-                let res = result.into_response().data().await;
+            let response_task = async move {
+                let body = future.await.into_response().data().await;
                 waker.wake();
-                _ = tx.send(res);
-            });
+                _ = tx.send(body);
+            };
             let waker = cx.waker().clone();
             let flag = self.done.clone();
-            let mut interval = tokio::time::interval(self.interval);
-            tokio::spawn(async move {
-                loop {
-                    if flag.load(Ordering::Relaxed) {
-                        break;
-                    }
-
+            let interval = self.interval;
+            let ticker_task = async move {
+                let mut interval = tokio::time::interval(interval);
+                while !flag.load(Ordering::Relaxed) {
                     interval.tick().await;
                     waker.wake_by_ref();
                 }
+            };
+
+            tokio::spawn(async move {
+                tokio::join!(response_task, ticker_task)
             });
 
             Poll::Pending
