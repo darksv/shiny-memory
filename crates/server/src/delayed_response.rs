@@ -1,7 +1,6 @@
 use std::cell::Cell;
-use std::convert::Infallible;
 use std::future::Future;
-use std::pin::Pin;
+use std::pin::{Pin};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
@@ -10,18 +9,17 @@ use axum::body::{Bytes, HttpBody};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use futures_util::future::BoxFuture;
-use serde::Serialize;
 
 pub(crate) struct DelayedResponse<T> {
     generate: Option<BoxFuture<'static, T>>,
-    tx: Option<tokio::sync::oneshot::Sender<T>>,
-    rx: tokio::sync::oneshot::Receiver<T>,
+    tx: Option<tokio::sync::oneshot::Sender<Option<Result<Bytes, axum::Error>>>>,
+    rx: tokio::sync::oneshot::Receiver<Option<Result<Bytes, axum::Error>>>,
     done: Arc<AtomicBool>,
     last_send: Cell<std::time::Instant>,
     interval: Duration,
 }
 
-impl<T: Send> DelayedResponse<T> {
+impl<T: Send + IntoResponse> DelayedResponse<T> {
     pub(crate) fn new(f: impl Future<Output=T> + Send + 'static) -> Self {
         let (tx, rx) = tokio::sync::oneshot::channel();
         Self {
@@ -35,15 +33,17 @@ impl<T: Send> DelayedResponse<T> {
     }
 }
 
-impl<T: Serialize + Sync + Send + 'static> IntoResponse for DelayedResponse<T> {
+impl<T: Sync + Send + 'static + IntoResponse> IntoResponse for DelayedResponse<T> {
     fn into_response(self) -> axum::response::Response {
         self.boxed_unsync().into_response()
     }
 }
 
-impl<T: Send + 'static> HttpBody for DelayedResponse<T> where T: Serialize {
+impl<T> HttpBody for DelayedResponse<T>
+    where T: IntoResponse + Send + 'static
+{
     type Data = Bytes;
-    type Error = Infallible;
+    type Error = axum::Error;
 
     fn poll_data(
         mut self: Pin<&mut Self>,
@@ -60,8 +60,9 @@ impl<T: Send + 'static> HttpBody for DelayedResponse<T> where T: Serialize {
             let waker = cx.waker().clone();
             tokio::spawn(async move {
                 let result = fut.await;
+                let res = result.into_response().data().await;
                 waker.wake();
-                _ = tx.send(result);
+                _ = tx.send(res);
             });
             let waker = cx.waker().clone();
             let flag = self.done.clone();
@@ -79,9 +80,8 @@ impl<T: Send + 'static> HttpBody for DelayedResponse<T> where T: Serialize {
 
             Poll::Pending
         } else if let Ok(data) = self.rx.try_recv() {
-            let serialized = serde_json::to_vec(&data).map_err(drop).unwrap();
             self.done.store(true, Ordering::Relaxed);
-            Poll::Ready(Some(Ok(Bytes::from(serialized))))
+            Poll::Ready(data)
         } else if self.done.load(Ordering::Relaxed) {
             Poll::Ready(None)
         } else {

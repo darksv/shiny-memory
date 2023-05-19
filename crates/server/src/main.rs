@@ -408,18 +408,18 @@ async fn infer(
                     });
                 }
 
-                InferenceResponse {
+                Json(InferenceResponse {
                     boxes,
                     model_version: state.model_version,
                     error: None,
-                }
+                })
             }
             Err(e) => {
-                InferenceResponse {
+                Json(InferenceResponse {
                     boxes: Vec::new(),
                     model_version: state.model_version,
                     error: Some(e.to_string()),
-                }
+                })
             }
         }
     }))
