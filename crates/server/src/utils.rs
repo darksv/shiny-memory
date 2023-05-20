@@ -1,5 +1,6 @@
-use std::collections::hash_map::{RandomState};
+use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
+use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -8,10 +9,12 @@ pub(crate) struct TempFile {
 }
 
 impl TempFile {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(dir: impl AsRef<Path>) -> Result<Self, io::Error> {
         let unique = RandomState::new().build_hasher().finish();
-        let path = PathBuf::from(format!("{unique}.bin"));
-        Self { path }
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(format!("{unique}.bin"));
+        Ok(Self { path })
     }
 }
 

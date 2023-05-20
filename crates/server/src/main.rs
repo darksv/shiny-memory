@@ -237,7 +237,7 @@ async fn infer_from_url(
         .and_then(|it| it.to_str().ok())
         .map(|it| it.to_string());
 
-    let input_file_path = TempFile::new();
+    let input_file_path = TempFile::new("tmp")?;
     tracing::info!("Saving as {}", input_file_path.display());
     save_stream_to_file(&input_file_path, response.bytes_stream()).await?;
 
