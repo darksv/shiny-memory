@@ -77,24 +77,39 @@ fn resize(img: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> ResizingInfo 
     ResizingInfo { image, horz_padding, vert_padding }
 }
 
+fn image_into_tensor<const N: u32>(image: &image::RgbImage) -> Option<ndarray::Array4<f32>> {
+    if image.dimensions() != (N, N) {
+        return None;
+    }
+
+    let mut out: Vec<f32> = vec![0.0; (N * N * 3) as usize];
+    for (x, y, &Rgb([r, g, b])) in image.enumerate_pixels() {
+        out[(0 * N * N + N * y + x) as usize] = r as f32 / 255.0;
+        out[(1 * N * N + N * y + x) as usize] = g as f32 / 255.0;
+        out[(2 * N * N + N * y + x) as usize] = b as f32 / 255.0;
+    }
+
+    ndarray::Array4::from_shape_vec((1, 3, N as usize, N as usize), out).ok()
+}
+
 pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> OrtResult<Vec<Detection>> {
     let s = std::time::Instant::now();
     let ResizingInfo { image, vert_padding, horz_padding } = resize(original_image);
-    tracing::info!("resized in {:?}", s.elapsed());
+    let resizing_time = s.elapsed();
 
     let s = std::time::Instant::now();
-    let input = ndarray::Array4::from_shape_fn(
-        (1, 3, IMAGE_SIZE as _, IMAGE_SIZE as _),
-        |(_, c, y, x)| {
-            image.get_pixel(x as u32, y as u32).0[c] as f32 / 255.0
-        }).into_dyn();
-    tracing::info!("converted into tensor in {:?}", s.elapsed());
+    let input = image_into_tensor::<IMAGE_SIZE>(&image)
+        .expect("invalid resizing?")
+        .into_dyn();
+    let conversion_time = s.elapsed();
 
     let input = InputTensor::FloatTensor(input);
 
     let s = std::time::Instant::now();
     let result = session.run(&[input])?;
-    tracing::info!("infer in {:?}", s.elapsed());
+    let inference_time = s.elapsed();
+
+    tracing::info!("Timing: resize = {resizing_time:>10?} | conversion = {conversion_time:>10?} | inference = {inference_time:>10?}");
 
     let predictions = result[0].try_extract::<f32>()?;
     let predictions = predictions.view();
