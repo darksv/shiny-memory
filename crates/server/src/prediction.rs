@@ -109,7 +109,7 @@ pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImage
     let result = session.run(&[input])?;
     let inference_time = s.elapsed();
 
-    tracing::info!("Timing: resize = {resizing_time:>10?} | conversion = {conversion_time:>10?} | inference = {inference_time:>10?}");
+    tracing::info!("resize: {resizing_time:>10.3?} | convert: {conversion_time:>10.3?} | infer: {inference_time:>10.3?}");
 
     let predictions = result[0].try_extract::<f32>()?;
     let predictions = predictions.view();
