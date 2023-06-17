@@ -9,11 +9,11 @@ pub(crate) struct TempFilePath {
 }
 
 impl TempFilePath {
-    pub(crate) fn new(dir: impl AsRef<Path>) -> Result<Self, io::Error> {
+    pub(crate) fn new(dir: impl AsRef<Path>, extension: &str) -> Result<Self, io::Error> {
         let unique = RandomState::new().build_hasher().finish();
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
-        let path = dir.join(format!("{unique}.bin"));
+        let path = dir.join(format!("{unique}.{extension}"));
         tracing::info!("creating a temporary file {}", path.display());
         Ok(Self { path })
     }

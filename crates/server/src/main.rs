@@ -237,7 +237,7 @@ async fn infer_from_url(
         .and_then(|it| it.to_str().ok())
         .map(|it| it.to_string());
 
-    let input_path = TempFilePath::new("tmp")?;
+    let input_path = TempFilePath::new("tmp", "bin")?;
     tracing::info!("Saving as {}", input_path.display());
     save_stream_to_file(&input_path, response.bytes_stream()).await?;
 
@@ -556,14 +556,15 @@ async fn infer_draw(
             ).into_response()
         }
         Ok(InferenceResult { detections, media: Media::Video(path), size: _ }) => {
+            let output_file = TempFilePath::new("tmp", "mp4").unwrap();
             let mut det_iter = detections.into_iter();
-            video::overlay_video(&path, "output.mp4", move |idx, frame| {
+            video::overlay_video(&path, &output_file, move |idx, frame| {
                 for (_, detection) in det_iter.by_ref().take_while(|(fidx, _)| idx == *fidx) {
                     draw_box(&state, frame, &detection, payload.labels);
                 }
             }).unwrap();
 
-            let file = tokio::fs::File::open("output.mp4").await.unwrap();
+            let file = tokio::fs::File::open(&output_file).await.unwrap();
             let stream = ReaderStream::new(file);
             let body = StreamBody::new(stream);
 
