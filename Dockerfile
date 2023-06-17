@@ -5,6 +5,7 @@ COPY . .
 
 ENV ORT_LIB_LOCATION /usr/local/lib/libonnxruntime.so
 ENV ORT_STRATEGY system
+ENV RUSTFLAGS -C target-cpu=native
 
 RUN ln -s /app/assets/libonnxruntime.so.1.14.1 /usr/local/lib/libonnxruntime.so
 RUN ln -s /app/assets/libonnxruntime.so.1.14.1 /usr/local/lib/libonnxruntime.so.1.14.1
