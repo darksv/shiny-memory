@@ -164,7 +164,7 @@ fn predicto(state: &AppState, payload: Predict) -> anyhow::Result<(Vec<Detection
 
     let image = image::open(path)?.to_rgb8();
     let size = image.dimensions();
-    let detections = prediction::predict(&state.model, &image)?;
+    let detections = prediction::predict(&state.model, &image, 0)?;
     Ok((detections, size))
 }
 
@@ -316,7 +316,7 @@ fn infer_gif(
             color_hint: None,
         };
         let image = samples.as_view()?;
-        for detection in prediction::predict(model, &image)? {
+        for detection in prediction::predict(model, &image, frame_idx)? {
             detections.push((frame_idx, detection));
         }
         size = (frame.width as u32, frame.height as u32);
@@ -352,7 +352,7 @@ fn infer_image(
         .into_rgb8();
 
     tracing::info!("inferring classes...");
-    let detections = prediction::predict(model, &image)?
+    let detections = prediction::predict(model, &image, 0)?
         .into_iter()
         .map(|d| (0, d))
         .collect();
@@ -388,7 +388,7 @@ fn infer_video(
         }
 
         if frame_idx % config.step == 0 {
-            let result = match prediction::predict(&model, frame) {
+            let result = match prediction::predict(&model, frame, frame_idx) {
                 Ok(det) => det,
                 Err(e) => {
                     tracing::warn!("error during prediction: {}", e);

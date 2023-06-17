@@ -92,7 +92,7 @@ fn image_into_tensor<const N: u32>(image: &image::RgbImage) -> Option<ndarray::A
     ndarray::Array4::from_shape_vec((1, 3, N as usize, N as usize), out).ok()
 }
 
-pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImageWithContinuousBuffer<Rgb<u8>>) -> OrtResult<Vec<Detection>> {
+pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImageWithContinuousBuffer<Rgb<u8>>, frame_no: usize) -> OrtResult<Vec<Detection>> {
     let s = std::time::Instant::now();
     let ResizingInfo { image, vert_padding, horz_padding } = resize(original_image);
     let resizing_time = s.elapsed();
@@ -109,7 +109,7 @@ pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImage
     let result = session.run(&[input])?;
     let inference_time = s.elapsed();
 
-    tracing::info!("resize: {resizing_time:>10.3?} | convert: {conversion_time:>10.3?} | infer: {inference_time:>10.3?}");
+    tracing::info!("#{frame_no:>04} | resize: {resizing_time:>10.3?} | convert: {conversion_time:>10.3?} | infer: {inference_time:>10.3?}");
 
     let predictions = result[0].try_extract::<f32>()?;
     let predictions = predictions.view();
