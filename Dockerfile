@@ -60,4 +60,9 @@ ENV RUST_LOG="debug,server=INFO"
 ENV RUST_BACKTRACE=full
 ENV ORT_DYLIB_PATH /app/assets/libonnxruntime.so.1.14.1
 
-CMD ["./server", "13"]
+CMD [
+    "./server",
+    "--model-version", "17",
+    "--port", "3000",
+    "--max-image-size-in-mb", "100"
+]

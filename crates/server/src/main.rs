@@ -37,6 +37,7 @@ mod utils;
 #[derive(Clone)]
 struct AppState {
     model: Arc<ort::Session>,
+    max_image_size_in_bytes: u32,
     model_version: u32,
     labels: Vec<String>,
     font: rusttype::Font<'static>,
@@ -66,7 +67,12 @@ fn parse_labels(s: &str) -> anyhow::Result<Vec<&str>> {
 
 #[derive(clap::Parser)]
 struct Config {
+    #[arg(long)]
     model_version: u32,
+    #[arg(long, default_value_t = 3000)]
+    port: u16,
+    #[arg(long, default_value_t = 100)]
+    max_image_size_in_mb: u32,
 }
 
 #[tokio::main]
@@ -114,12 +120,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/webhook", post(webhook))
         .with_state(AppState {
             model: Arc::new(session),
+            max_image_size_in_bytes: args.max_image_size_in_mb * 1024 * 1024,
             model_version,
             labels: labels.iter().map(|l| l.to_string()).collect(),
             font,
         });
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     tracing::info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
@@ -246,11 +253,14 @@ async fn infer_from_url(
     let token_source = CancellationToken::new();
     let token = token_source.clone();
     let model = state.model.clone();
+    let max_image_size_in_bytes = state.max_image_size_in_bytes;
 
-    let handle = tokio::task::spawn_blocking(move || match mime_type.as_deref() {
-        Some("image/gif") => infer_gif(input_path, &model, token),
-        Some(v) if v.starts_with("image/") => infer_image(input_path, &model),
-        _ => infer_video(input_path, InferVideoConfig { step, single_frame }, &model, token),
+    let handle = tokio::task::spawn_blocking(move || {
+        match mime_type.as_deref() {
+            Some("image/gif") => infer_gif(input_path, &model, token),
+            Some(v) if v.starts_with("image/") => infer_image(input_path, &model, max_image_size_in_bytes),
+            _ => infer_video(input_path, InferVideoConfig { step, single_frame }, &model, token),
+        }
     });
 
     if timeout {
@@ -330,6 +340,7 @@ fn infer_gif(
 fn infer_image(
     input_path: TempFilePath,
     model: &ort::Session,
+    max_image_size_in_bytes: u32,
 ) -> anyhow::Result<InferenceResult> {
     let file = File::open(&input_path)?;
     let (width, height) = image::io::Reader::new(BufReader::new(file))
@@ -338,7 +349,7 @@ fn infer_image(
 
     let raw_size_in_bytes = width * height * 3;
     tracing::info!("image dimensions = {width}x{height} = {raw_size_in_bytes}B");
-    if raw_size_in_bytes >= 25_000_000 {
+    if raw_size_in_bytes >= max_image_size_in_bytes {
         anyhow::bail!("image is too big: {width}x{height}");
     }
 
