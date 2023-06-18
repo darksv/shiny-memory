@@ -13,6 +13,7 @@ use axum::{http::StatusCode, Json, response::IntoResponse, Router, routing::{get
 use axum::body::{Bytes, StreamBody};
 use axum::extract::{Query, State};
 use axum::http::header;
+use clap::Parser;
 use futures_util::{Stream, StreamExt};
 use gif::ColorOutput;
 use image::{DynamicImage, GenericImage, GenericImageView, ImageFormat, Rgb};
@@ -63,16 +64,17 @@ fn parse_labels(s: &str) -> anyhow::Result<Vec<&str>> {
     Ok(labels.into_iter().map(|it| it.1).collect())
 }
 
+#[derive(clap::Parser)]
+struct Config {
+    model_version: u32,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Config::parse();
     tracing_subscriber::fmt().init();
 
-    let model_version = std::env::args()
-        .nth(1)
-        .context("missing model version")?
-        .parse()
-        .context("invalid model version")?;
-
+    let model_version = args.model_version;
     let path = format!(r"./assets/models/best{model_version}.onnx");
     tracing::info!("Loading model from '{}'", path);
 
