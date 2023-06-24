@@ -1,4 +1,4 @@
-FROM rust:1.68-bullseye AS builder
+FROM rust:1.70-bullseye AS builder
 
 WORKDIR /app
 COPY . .
@@ -60,9 +60,9 @@ ENV RUST_LOG="debug,server=INFO"
 ENV RUST_BACKTRACE=full
 ENV ORT_DYLIB_PATH /app/assets/libonnxruntime.so.1.14.1
 
-CMD [
-    "./server",
-    "--model-version", "17",
-    "--port", "3000",
-    "--max-image-size-in-mb", "100"
+CMD [ \
+    "./server", \
+    "--model-version", "17", \
+    "--port", "3000", \
+    "--max-image-size-in-mb", "100" \
 ]
