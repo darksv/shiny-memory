@@ -172,13 +172,12 @@ fn main() -> anyhow::Result<()> {
         let image: image::ImageResult<_> = try {
             let reader = image::io::Reader::open(&path)?
                 .with_guessed_format()?;
-            let format = reader.format();
             let image = reader.decode()?;
-            Some((image, format))
+            Some(image)
         };
 
-        let (image, format) = match image {
-            Ok(Some(x)) => x,
+        let image = match image {
+            Ok(Some(image)) => image,
             Ok(None) => {
                 println!("Error opening '{}': unknown format", path.display());
                 return None;
