@@ -1,13 +1,14 @@
 #![feature(try_blocks)]
 
-use std::collections::HashSet;
-use std::convert::identity;
 use std::{fs, io};
 use std::cmp::Reverse;
+use std::collections::HashSet;
+use std::convert::identity;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use clap::Parser;
 use image::{GenericImageView, ImageFormat};
 use image::imageops::FilterType;
 use rand::prelude::*;
@@ -119,12 +120,27 @@ struct InputFile {
     size: (u32, u32),
 }
 
-fn main() -> anyhow::Result<()> {
-    let (dataset_output_dir, n) = dir_with_next_seq_number(r"D:\ML\yolo\data").unwrap();
-    let project_path = r"C:\Users\Host\Downloads\project-1-at-2023-07-29-23-22-c7a8f372.json";
+#[derive(clap::Parser)]
+struct Config {
+    #[arg(long, default_value = r"D:\ML\yolo\data")]
+    data_dir: PathBuf,
+    #[arg(long, default_value = r"C:\Users\Host\Downloads\project-1-at-2023-07-29-23-22-c7a8f372.json")]
+    json_path: PathBuf,
+    #[arg(long, default_value = r"D:\ML\label-studio\media")]
+    label_studio_media_dir: PathBuf,
+    #[arg(short, long)]
+    dry_run: bool,
+    #[arg(long, default_value = r"D:\ML\yolo\.cache")]
+    cache_dir: PathBuf,
+}
 
-    let json = fs::read_to_string(project_path)?;
-    let mut data: Vec<Task> = serde_json::from_str(&json)?;
+fn main() -> anyhow::Result<()> {
+    let config = Config::parse();
+    let (dataset_output_dir, n) = dir_with_next_seq_number(config.data_dir).unwrap();
+
+    let file = fs::File::open(&config.json_path)?;
+    let mut reader = io::BufReader::new(file);
+    let mut data: Vec<Task> = serde_json::from_reader(&mut reader)?;
     for task in &mut data {
         if task.annotations.len() <= 1 {
             continue;
@@ -148,11 +164,10 @@ fn main() -> anyhow::Result<()> {
         classes
     };
 
-    let base = Path::new(r"D:\ML\label-studio\media");
     let mut base_images: Vec<_> = data.par_iter().filter_map(|task| {
         let rel_path = Path::new(&task.data.image);
         let path = rel_path.strip_prefix(r"\data").unwrap();
-        let path = base.join(path);
+        let path = config.label_studio_media_dir.join(path);
 
         let image: image::ImageResult<_> = try {
             let reader = image::io::Reader::open(&path)?
@@ -278,8 +293,9 @@ fn main() -> anyhow::Result<()> {
         println!("{:<10} ({}): {}", classes[idx], idx, count);
     }
 
-    // return Ok(());
-
+    if config.dry_run {
+        return Ok(());
+    }
 
     fs::create_dir_all(&dataset_output_dir)?;
 
@@ -308,8 +324,7 @@ fn main() -> anyhow::Result<()> {
     let test_size = (0.1 * images.len() as f64).round() as usize;
     let (test, train) = images.split_at(test_size);
 
-    let cache_dir = Path::new(r"D:\ML\yolo\.cache");
-    fs::create_dir_all(cache_dir).unwrap();
+    fs::create_dir_all(&config.cache_dir).unwrap();
 
     for (dir, set) in [
         ("validation", test),
@@ -330,7 +345,7 @@ fn main() -> anyhow::Result<()> {
                 op => format!("{}_{}_{:?}", file_stem, size, op),
             };
 
-            let cached = cache_dir
+            let cached = config.cache_dir
                 .join(&file_name)
                 .with_extension("jpg");
 
