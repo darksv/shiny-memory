@@ -4,7 +4,7 @@ use std::{fs, io};
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::convert::identity;
-use std::io::{BufWriter, Write};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -36,7 +36,6 @@ pub struct Task {
 pub struct Data {
     pub image: String,
 }
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskAnnotation {
@@ -99,7 +98,7 @@ fn dir_with_next_seq_number(base_path: impl AsRef<Path>) -> Option<(PathBuf, usi
     let prefix = base_path.file_name()?.to_str()?;
     let parent_dir = base_path.parent()?;
 
-    let seq = std::fs::read_dir(parent_dir)
+    let seq = fs::read_dir(parent_dir)
         .unwrap()
         .flatten()
         .flat_map(|entry| Some(entry.path()
@@ -306,7 +305,7 @@ fn main() -> anyhow::Result<()> {
         .open(dataset_path)
         .context("create yaml")?;
 
-    let mut writer = BufWriter::new(file);
+    let mut writer = io::BufWriter::new(file);
     serde_yaml::to_writer(&mut writer, &DataSet {
         path: format!("../data{n}/"),
         train: format!("images/training/"),
@@ -316,9 +315,7 @@ fn main() -> anyhow::Result<()> {
     })?;
     drop(writer);
 
-
     images.shuffle(&mut thread_rng());
-
 
     let test_size = (0.1 * images.len() as f64).round() as usize;
     let (test, train) = images.split_at(test_size);
@@ -399,18 +396,20 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn save_labels(path: impl AsRef<Path>, anns: &[Annotation]) {
-    if !path.as_ref().exists() {
-        let mut f = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .unwrap();
+fn save_labels(path: impl AsRef<Path>, annotations: &[Annotation]) {
+    if path.as_ref().exists() {
+       return;
+    }
 
-        for ann in anns {
-            writeln!(&mut f, "{} {} {} {} {}", ann.label_id, ann.cx, ann.cy, ann.w, ann.h).unwrap();
-        }
+    let mut f = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .unwrap();
+
+    for ann in annotations {
+        writeln!(&mut f, "{} {} {} {} {}", ann.label_id, ann.cx, ann.cy, ann.w, ann.h).unwrap();
     }
 }
 
