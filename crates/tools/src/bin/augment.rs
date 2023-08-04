@@ -282,7 +282,7 @@ fn main() -> anyhow::Result<()> {
 
             let cached = cache_dir
                 .join(&file_name)
-                .with_extension(".jpg");
+                .with_extension("jpg");
 
             if !cached.exists() {
                 let src = image::open(path).unwrap();
