@@ -145,6 +145,10 @@ fn main() -> anyhow::Result<()> {
 
         let mut annotations = Vec::new();
         for ann in &task.annotations {
+            if ann.was_cancelled {
+                return None;
+            }
+
             for res in &ann.result {
                 for label in &res.value.rectanglelabels {
                     let Some(label) = remap_label(label) else {
