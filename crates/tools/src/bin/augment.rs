@@ -106,11 +106,18 @@ fn dir_with_next_seq_number(base_path: impl AsRef<Path>) -> Option<(PathBuf, usi
 }
 
 fn main() -> anyhow::Result<()> {
-    let (dataset_output_dir, n) = dir_with_next_seq_number(r"D:\yolo\data").unwrap();
-    let project_path = r"C:\Users\Host\Downloads\project-1-at-2023-04-03-14-36-67286744.json";
+    let (dataset_output_dir, n) = dir_with_next_seq_number(r"D:\ML\yolo\data").unwrap();
+    let project_path = r"C:\Users\Host\Downloads\project-1-at-2023-07-29-23-22-c7a8f372.json";
 
     let json = fs::read_to_string(project_path)?;
-    let data: Vec<Task> = serde_json::from_str(&json)?;
+    let mut data: Vec<Task> = serde_json::from_str(&json)?;
+    for task in &mut data {
+        if task.annotations.len() <= 1 {
+            continue;
+        }
+        task.annotations.sort_by_key(|it| Reverse(it.id));
+        task.annotations.drain(1..);
+    }
 
     let classes: HashSet<_> = data.iter()
         .flat_map(|it| it.annotations.iter())
