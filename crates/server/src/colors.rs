@@ -21,9 +21,9 @@ pub(crate) fn get_color(n: usize) -> Option<Rgb<u8>> {
 pub(crate) fn optimal_text_color_for_background(bg_color: Rgb<u8>) -> Rgb<u8> {
     let Rgb([r, g, b]) = bg_color;
 
-    let luma = 0.2126 * (r as f32 / u8::MAX as f32)
-        + 0.7152 * (g as f32 / u8::MAX as f32)
-        + 0.0722 * (b as f32 / u8::MAX as f32);
+    let luma = 0.2126 * (r as f32 / 255.0)
+        + 0.7152 * (g as f32 / 255.0)
+        + 0.0722 * (b as f32 / 255.0);
 
     if luma <= 0.5 {
         Rgb([255, 255, 255])
