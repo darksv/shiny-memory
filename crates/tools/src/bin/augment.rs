@@ -264,7 +264,8 @@ fn main() -> anyhow::Result<()> {
     let test_size = (0.1 * images.len() as f64).round() as usize;
     let (test, train) = images.split_at(test_size);
 
-    let cache_dir = Path::new(r"D:\yolo\.cache");
+    let cache_dir = Path::new(r"D:\ML\yolo\.cache");
+    fs::create_dir_all(cache_dir).unwrap();
 
     for (dir, set) in [
         ("validation", test),
