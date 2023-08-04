@@ -8,6 +8,8 @@ use ndarray::Axis;
 use ort::OrtResult;
 use ort::tensor::InputTensor;
 
+use math::DetectedBox;
+
 const IMAGE_SIZE: u32 = 640;
 
 pub(crate) trait GenericImageWithContinuousBuffer<P: Pixel>: GenericImageView<Pixel=P> {
@@ -151,7 +153,7 @@ pub(crate) fn predict(session: &ort::Session, original_image: &impl GenericImage
         boxes.push(Detection { rect, conf, class_id });
     }
 
-    let filtered = nms(&boxes, 0.1, 3);
+    let filtered = math::nms_boxes(&boxes, 0.1, 3);
     Ok(boxes.into_iter().enumerate().filter_map(|(idx, b)| filtered.contains(&idx).then_some(b)).collect())
 }
 
@@ -173,44 +175,6 @@ fn new_size_to_fit_preserving_aspect_ratio(
     (new_width, new_height)
 }
 
-fn nms(boxes: &[Detection], overlap_threshold: f32, neighbour_threshold: usize) -> Vec<usize> {
-    if boxes.is_empty() {
-        return Vec::new();
-    }
-
-    let mut indices = Vec::with_capacity(boxes.len());
-    indices.extend(0..boxes.len());
-    indices.sort_by_key(|&idx| (boxes[idx].rect.bottom(), idx));
-
-    let mut remaining_boxes = Vec::new();
-
-    while let Some(idx1) = indices.pop() {
-        let box1 = &boxes[idx1];
-
-        let mut neighbours = 0;
-        indices.retain_mut(|idx2| {
-            let box2 = &boxes[*idx2];
-            if box1.class_id != box2.class_id {
-                return true;
-            }
-
-            if box1.iou(&box2) > overlap_threshold {
-                neighbours += 1;
-                false
-            } else {
-                true
-            }
-        });
-
-        if neighbours >= neighbour_threshold {
-            remaining_boxes.push(idx1);
-        }
-    }
-
-    remaining_boxes
-}
-
-
 #[derive(Debug)]
 pub(crate) struct Detection {
     pub(crate) rect: Rect,
@@ -218,25 +182,16 @@ pub(crate) struct Detection {
     pub(crate) class_id: usize,
 }
 
-impl Detection {
-    fn area(&self) -> u32 {
-        (self.rect.width() + 1) * (self.rect.height() + 1)
+impl DetectedBox for Detection {
+    fn rect(&self) -> Rect {
+        self.rect
     }
 
-    fn intersection_area(&self, other: &Self) -> u32 {
-        self.rect.intersect(other.rect).map_or(0, |r| {
-            (r.width() + 1) * (r.height() + 1)
-        })
+    fn conf(&self) -> f32 {
+        self.conf
     }
 
-    fn union_area(&self, other: &Self) -> u32 {
-        self.area() + other.area() - self.intersection_area(other)
-    }
-
-    fn iou(&self, other: &Self) -> f32 {
-        let int_area = self.intersection_area(&other);
-        let union_area = self.union_area(&other);
-        let overlap = int_area as f32 / union_area as f32;
-        overlap
+    fn class(&self) -> Option<usize> {
+        Some(self.class_id)
     }
 }
