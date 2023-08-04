@@ -245,8 +245,9 @@ fn main() -> anyhow::Result<()> {
 
     let mut writer = BufWriter::new(file);
     serde_yaml::to_writer(&mut writer, &DataSet {
-        train: format!("../data{n}/images/training/"),
-        val: format!("../data{n}/images/validation/"),
+        path: format!("../data{n}/"),
+        train: format!("images/training/"),
+        val: format!("images/validation/"),
         nc: classes.len(),
         names: classes.iter().map(|it| it.to_string()).collect(),
     })?;
