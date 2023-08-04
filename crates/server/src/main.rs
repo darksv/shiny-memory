@@ -1,11 +1,12 @@
 #![feature(array_chunks)]
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 use std::net::SocketAddr;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -36,11 +37,25 @@ mod utils;
 
 #[derive(Clone)]
 struct AppState {
-    model: Arc<ort::Session>,
+    models: Arc<RwLock<BTreeMap<u32, Arc<Model>>>>,
     max_image_size_in_bytes: u32,
-    model_version: u32,
-    labels: Vec<String>,
+    default_model_version: u32,
     font: rusttype::Font<'static>,
+    environment: Arc<ort::Environment>,
+}
+
+impl AppState {
+    fn get_model(&self, version: Option<u32>) -> anyhow::Result<Arc<Model>> {
+        let version = version.unwrap_or(self.default_model_version);
+        if let Some(model) = self.models.read().unwrap().get(&version) {
+            return Ok(model.clone());
+        }
+
+        let path = format!(r"./assets/models/best{version}.onnx");
+        let model: Arc<_> = load_model(&self.environment, &path)?.into();
+        self.models.write().unwrap().insert(version, model.clone());
+        Ok(model)
+    }
 }
 
 fn parse_labels(s: &str) -> anyhow::Result<Vec<&str>> {
@@ -75,22 +90,15 @@ struct Config {
     max_image_size_in_mb: u32,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args = Config::parse();
-    tracing_subscriber::fmt().init();
+struct Model {
+    session: ort::Session,
+    labels: Vec<String>,
+}
 
-    let model_version = args.model_version;
-    let path = format!(r"./assets/models/best{model_version}.onnx");
-    tracing::info!("Loading model from '{}'", path);
+fn load_model(env: &Arc<ort::Environment>, path: impl AsRef<Path>) -> anyhow::Result<Model> {
+    tracing::info!("Loading model from '{}'", path.as_ref().display());
 
-    let environment = ort::Environment::builder()
-        .with_name("test")
-        .with_log_level(ort::LoggingLevel::Verbose)
-        .build()?
-        .into_arc();
-
-    let session = ort::SessionBuilder::new(&environment)?
+    let session = ort::SessionBuilder::new(env)?
         .with_optimization_level(ort::GraphOptimizationLevel::Level2)?
         .with_allocator(AllocatorType::Arena)?
         .with_parallel_execution(true)?
@@ -104,10 +112,38 @@ async fn main() -> anyhow::Result<()> {
     let labels = parse_labels(&labels)?;
     tracing::info!("found labels: {:?}", labels);
 
+    Ok(Model {
+        session,
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+    })
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Config::parse();
+    tracing_subscriber::fmt().init();
+
+    let environment = ort::Environment::builder()
+        .with_name("test")
+        .with_log_level(ort::LoggingLevel::Verbose)
+        .build()?
+        .into_arc();
+
     let font = include_bytes!("../../../assets/fonts/Roboto/Roboto-Regular.ttf");
     let font = rusttype::Font::try_from_bytes(font).expect("invalid font");
 
     video::init();
+
+    let state = AppState {
+        environment,
+        models: Default::default(),
+        max_image_size_in_bytes: args.max_image_size_in_mb * 1024 * 1024,
+        default_model_version: args.model_version,
+        font,
+    };
+
+    // Try load default model
+    let _model = state.get_model(None);
 
     let app = Router::new()
         .route("/", get(root))
@@ -118,13 +154,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/model", get(model_info))
         .route("/draw", get(infer_draw))
         .route("/webhook", post(webhook))
-        .with_state(AppState {
-            model: Arc::new(session),
-            max_image_size_in_bytes: args.max_image_size_in_mb * 1024 * 1024,
-            model_version,
-            labels: labels.iter().map(|l| l.to_string()).collect(),
-            font,
-        });
+        .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     tracing::info!("listening on {}", addr);
@@ -149,7 +179,7 @@ async fn setup(
 ) -> (StatusCode, Json<Value>) {
     tracing::debug!("payload = {:?}", payload);
     (StatusCode::OK, Json(json!({
-        "model_version": state.model_version
+        "model_version": state.default_model_version
     })))
 }
 
@@ -159,13 +189,13 @@ async fn webhook(
     (StatusCode::OK, Json(json!({})))
 }
 
-fn predicto(state: &AppState, payload: Predict) -> anyhow::Result<(Vec<Detection>, (u32, u32))> {
+fn predicto(model: &Model, payload: Predict) -> anyhow::Result<(Vec<Detection>, (u32, u32))> {
     let file = match &payload.tasks[0].data {
         TaskData::Image { image } => image,
     };
 
     let rel_path = file.strip_prefix("/data/").context("invalid path")?;
-    let path = PathBuf::from(r"D:\label-studio\media")
+    let path = PathBuf::from(r"D:\ML\label-studio\media")
         .join(rel_path)
         .canonicalize()?;
 
@@ -173,7 +203,7 @@ fn predicto(state: &AppState, payload: Predict) -> anyhow::Result<(Vec<Detection
 
     let image = image::open(path)?.to_rgb8();
     let size = image.dimensions();
-    let detections = prediction::predict(&state.model, &image, 0)?;
+    let detections = prediction::predict(&model.session, &image, 0)?;
     Ok((detections, size))
 }
 
@@ -205,6 +235,8 @@ struct PredictQuery {
     step: Option<usize>,
     #[serde(default)]
     timeout: bool,
+    #[serde(default)]
+    version: Option<u32>,
 }
 
 enum Media {
@@ -234,6 +266,7 @@ const PROCESSING_TIMEOUT: Duration = Duration::from_secs(45);
 
 async fn infer_from_url(
     url: &str,
+    model: Arc<Model>,
     state: &AppState,
     single_frame: bool,
     step: usize,
@@ -252,14 +285,13 @@ async fn infer_from_url(
 
     let token_source = CancellationToken::new();
     let token = token_source.clone();
-    let model = state.model.clone();
     let max_image_size_in_bytes = state.max_image_size_in_bytes;
 
     let handle = tokio::task::spawn_blocking(move || {
         match mime_type.as_deref() {
-            Some("image/gif") => infer_gif(input_path, &model, token),
-            Some(v) if v.starts_with("image/") => infer_image(input_path, &model, max_image_size_in_bytes),
-            _ => infer_video(input_path, InferVideoConfig { step, single_frame }, &model, token),
+            Some("image/gif") => infer_gif(input_path, &model.session, token),
+            Some(v) if v.starts_with("image/") => infer_image(input_path, &model.session, max_image_size_in_bytes),
+            _ => infer_video(input_path, InferVideoConfig { step, single_frame }, &model.session, token),
         }
     });
 
@@ -462,9 +494,10 @@ struct ModelInfoResponse {
 async fn model_info(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
+    let model = state.get_model(None).unwrap();
     ([(header::CONTENT_TYPE, "application/json")], Json(ModelInfoResponse {
-        version: state.model_version,
-        classes: state.labels.clone(),
+        version: state.default_model_version,
+        classes: model.labels.clone(),
     }))
 }
 
@@ -472,8 +505,9 @@ async fn infer(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
 ) -> impl IntoResponse {
+    let model = state.get_model(payload.version).unwrap();
     (StatusCode::OK, [(header::CONTENT_TYPE, "application/json")], DelayedResponse::new(async move {
-        match infer_from_url(&payload.url, &state, payload.single_frame, payload.step.unwrap_or(1), payload.timeout).await {
+        match infer_from_url(&payload.url, model.clone(), &state, payload.single_frame, payload.step.unwrap_or(1), payload.timeout).await {
             Ok(InferenceResult { detections, media: _, size: (width, height) }) => {
                 let mut boxes = vec![];
                 for &(frame, ref detection) in &detections {
@@ -481,21 +515,21 @@ async fn infer(
                         frame,
                         rect: rect_to_box_rect(detection.rect, width, height),
                         class_id: detection.class_id,
-                        class_name: state.labels.get(detection.class_id).cloned(),
+                        class_name: model.labels.get(detection.class_id).cloned(),
                         confidence: detection.conf,
                     });
                 }
 
                 Json(InferenceResponse {
                     boxes,
-                    model_version: state.model_version,
+                    model_version: state.default_model_version,
                     error: None,
                 })
             }
             Err(e) => {
                 Json(InferenceResponse {
                     boxes: Vec::new(),
-                    model_version: state.model_version,
+                    model_version: state.default_model_version,
                     error: Some(e.to_string()),
                 })
             }
@@ -505,6 +539,7 @@ async fn infer(
 
 fn draw_box(
     state: &AppState,
+    model: &Model,
     output: &mut impl GenericImage<Pixel=Rgb<u8>>,
     detection: &Detection,
     show_labels: bool,
@@ -521,7 +556,7 @@ fn draw_box(
     let padding = 2;
     let text_scale = rusttype::Scale::uniform(10.0);
     let label = if show_labels {
-        format!("{} — {:.02}", state.labels[detection.class_id], detection.conf)
+        format!("{} — {:.02}", model.labels[detection.class_id], detection.conf)
     } else {
         format!("{} — {:.02}", detection.class_id, detection.conf)
     };
@@ -550,11 +585,18 @@ async fn infer_draw(
     State(state): State<AppState>,
     Query(payload): Query<PredictQuery>,
 ) -> impl IntoResponse {
-    match infer_from_url(&payload.url, &state, payload.single_frame, payload.step.unwrap_or(1), true).await {
+    let model = match state.get_model(payload.version) {
+        Ok(model) => model,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "error": e.to_string()
+        }))).into_response()
+    };
+
+    match infer_from_url(&payload.url, model.clone(), &state, payload.single_frame, payload.step.unwrap_or(1), true).await {
         Ok(InferenceResult { detections, media: Media::Image(img), size: _ }) => {
             let mut output = img.to_rgb8();
             for (_, detection) in detections {
-                draw_box(&state, &mut output, &detection, payload.labels);
+                draw_box(&state, &model, &mut output, &detection, payload.labels);
             }
 
             let mut cursor = Cursor::new(vec![]);
@@ -573,7 +615,7 @@ async fn infer_draw(
             let mut det_iter = detections.into_iter();
             video::overlay_video(&path, &output_file, move |idx, frame| {
                 for (_, detection) in det_iter.by_ref().take_while(|(fidx, _)| idx == *fidx) {
-                    draw_box(&state, frame, &detection, payload.labels);
+                    draw_box(&state, &model, frame, &detection, payload.labels);
                 }
             }).unwrap();
 
@@ -605,12 +647,21 @@ fn to_ls_pos(x: f32) -> f32 {
     (x * 100.0).clamp(0.0, 100.0)
 }
 
+fn remap_label(name: &str) -> &str {
+    match name {
+
+        other => other,
+    }
+}
+
 async fn predict_ls(
     State(state): State<AppState>,
     Json(payload): Json<Predict>,
 ) -> (StatusCode, Json<PredictResults>) {
+    let model = state.get_model(None).unwrap();
+
     let mut preds = vec![];
-    let score = match predicto(&state, payload) {
+    let score = match predicto(&model, payload) {
         Ok((dets, (width, height))) => {
             let mut total_score = 0.0;
             for detection in &dets {
@@ -625,7 +676,7 @@ async fn predict_ls(
                         width: to_ls_pos(detection.rect.width() as f32 / width as f32),
                         height: to_ls_pos(detection.rect.height() as f32 / height as f32),
                         rotation: 0.0,
-                        rectanglelabels: vec![state.labels[detection.class_id].clone()],
+                        rectanglelabels: vec![remap_label(&model.labels[detection.class_id]).to_string()],
                     },
                     score: detection.conf,
                     from_name: "label".to_string(),
@@ -648,7 +699,7 @@ async fn predict_ls(
 
     let res = PredictResults {
         results: vec![Item { result: preds, score }],
-        model_version: state.model_version,
+        model_version: state.default_model_version,
     };
 
     (StatusCode::OK, Json(res))
