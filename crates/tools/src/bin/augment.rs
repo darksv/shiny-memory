@@ -2,7 +2,7 @@
 
 use std::{fs, io};
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::identity;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -86,13 +86,6 @@ struct DataSet {
     names: Vec<String>,
 }
 
-fn remap_label(label: &str) -> Option<&str> {
-    Some(match label {
-
-        _ => return None,
-    })
-}
-
 fn dir_with_next_seq_number(base_path: impl AsRef<Path>) -> Option<(PathBuf, usize)> {
     let base_path = base_path.as_ref();
     let prefix = base_path.file_name()?.to_str()?;
@@ -131,11 +124,22 @@ struct Config {
     dry_run: bool,
     #[arg(long, default_value = r"D:\ML\yolo\.cache")]
     cache_dir: PathBuf,
+    #[arg(long, default_value = r"data.yaml")]
+    data_yaml: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct DatasetConfig<'d> {
+    #[serde(borrow)]
+    classes: HashMap<&'d str, &'d str>,
 }
 
 fn main() -> anyhow::Result<()> {
     let config = Config::parse();
     let (dataset_output_dir, n) = dir_with_next_seq_number(config.data_dir).unwrap();
+
+    let yaml = fs::read(config.data_yaml).unwrap();
+    let dataset_config: DatasetConfig = serde_yaml::from_slice(&yaml).unwrap();
 
     let file = fs::File::open(&config.json_path)?;
     let mut reader = io::BufReader::new(file);
@@ -154,7 +158,7 @@ fn main() -> anyhow::Result<()> {
         .flat_map(|it| it.value.rectanglelabels.iter())
         .collect::<HashSet<_>>()
         .into_iter()
-        .flat_map(|it| remap_label(it))
+        .flat_map(|it| dataset_config.classes.get(it.as_str()))
         .collect();
 
     let classes = {
@@ -196,7 +200,7 @@ fn main() -> anyhow::Result<()> {
 
             for res in &ann.result {
                 for label in &res.value.rectanglelabels {
-                    let Some(label) = remap_label(label) else {
+                    let Some(label) = dataset_config.classes.get(label.as_str()) else {
                         continue;
                     };
 
