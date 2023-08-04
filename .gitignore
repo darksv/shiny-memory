@@ -5,3 +5,4 @@
 *.dll
 *.mp4
 Cargo.lock
+/third_party/ffmpeg-6.0-full_build-shared/
