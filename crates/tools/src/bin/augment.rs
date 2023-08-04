@@ -1,11 +1,15 @@
+#![feature(try_blocks)]
+
 use std::collections::HashSet;
 use std::convert::identity;
-use std::fs;
+use std::{fs, io};
+use std::cmp::Reverse;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use image::ImageFormat;
+use image::{GenericImageView, ImageFormat};
+use image::imageops::FilterType;
 use rand::prelude::*;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -69,11 +73,13 @@ pub struct Rectangle {
     pub width: f64,
     pub height: f64,
     pub rotation: f64,
+    #[serde(default)]
     pub rectanglelabels: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct DataSet {
+    path: String,
     train: String,
     val: String,
     nc: usize,
@@ -105,6 +111,14 @@ fn dir_with_next_seq_number(base_path: impl AsRef<Path>) -> Option<(PathBuf, usi
     Some((parent_dir.join(&format!("{prefix}{seq}")), seq))
 }
 
+#[derive(Debug)]
+struct InputFile {
+    path: PathBuf,
+    annotations: Vec<Annotation>,
+    hash: u64,
+    size: (u32, u32),
+}
+
 fn main() -> anyhow::Result<()> {
     let (dataset_output_dir, n) = dir_with_next_seq_number(r"D:\ML\yolo\data").unwrap();
     let project_path = r"C:\Users\Host\Downloads\project-1-at-2023-07-29-23-22-c7a8f372.json";
@@ -134,14 +148,32 @@ fn main() -> anyhow::Result<()> {
         classes
     };
 
-    let base = Path::new(r"D:\label-studio\media");
-    let base_images: Vec<_> = data.par_iter().filter_map(|task| {
+    let base = Path::new(r"D:\ML\label-studio\media");
+    let mut base_images: Vec<_> = data.par_iter().filter_map(|task| {
         let rel_path = Path::new(&task.data.image);
         let path = rel_path.strip_prefix(r"\data").unwrap();
         let path = base.join(path);
-        if !image::open(&path).is_ok() {
-            return None;
-        }
+
+        let image: image::ImageResult<_> = try {
+            let reader = image::io::Reader::open(&path)?
+                .with_guessed_format()?;
+            let format = reader.format();
+            let image = reader.decode()?;
+            Some((image, format))
+        };
+
+        let (image, format) = match image {
+            Ok(Some(x)) => x,
+            Ok(None) => {
+                println!("Error opening '{}': unknown format", path.display());
+                return None;
+            }
+            Err(image::ImageError::IoError(e)) if e.kind() == io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                println!("Error opening '{}': {:?}", path.display(), e);
+                return None;
+            }
+        };
 
         let mut annotations = Vec::new();
         for ann in &task.annotations {
@@ -169,18 +201,30 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        if annotations.is_empty() {
-            return None;
-        }
+        let hasher = image_hasher::HasherConfig::new().to_hasher();
+        let hash = hasher.hash_image(&image);
+        let hash: [u8; 8] = hash.as_bytes().try_into()
+            .expect("unsupported hash length");
 
-        Some((path, annotations))
+        Some(InputFile {
+            path,
+            annotations,
+            hash: u64::from_ne_bytes(hash),
+            size: image.dimensions(),
+        })
     }).collect();
+
+    base_images.sort_by_key(|i| (i.hash, Reverse(i.size)));
+    let before = base_images.len();
+    base_images.dedup_by_key(|i| i.hash);
+    let after = base_images.len();
+    println!("Dedup: before={before}, after={after}");
 
     println!("Before augmentation");
 
     let mut counted = vec![0; classes.len()];
-    for (_, anns) in &base_images {
-        for ann in anns {
+    for image in &base_images {
+        for ann in &image.annotations {
             counted[ann.label_id] += 1;
         }
     }
@@ -206,12 +250,12 @@ fn main() -> anyhow::Result<()> {
     ];
 
     let mut images = vec![];
-    for (idx, (_, anns)) in base_images.iter().enumerate() {
+    for (idx, image) in base_images.iter().enumerate() {
         // Images that contain most popular labels are less likely to be transformed:
         // each label has associated popularity factor based on individual contribution to the whole set.
-        let popularity_ratio: f32 = anns.iter()
+        let popularity_ratio: f32 = image.annotations.iter()
             .map(|it| popularity_by_label[it.label_id])
-            .sum::<f32>() / anns.len() as f32;
+            .sum::<f32>() / image.annotations.len() as f32;
 
         let transforms_to_create = (((1.0 - popularity_ratio) * 5.0).round() as usize)
             .clamp(1, 5);
@@ -225,8 +269,8 @@ fn main() -> anyhow::Result<()> {
     println!("After augmentation");
     let mut counted = vec![0; classes.len()];
     for (idx, _) in &images {
-        let (_, anns) = &base_images[*idx];
-        for ann in anns {
+        let image = &base_images[*idx];
+        for ann in &image.annotations {
             counted[ann.label_id] += 1;
         }
     }
@@ -277,12 +321,13 @@ fn main() -> anyhow::Result<()> {
         fs::create_dir_all(&images).unwrap();
 
         set.into_par_iter().for_each(|(idx, op)| {
-            let (path, anns) = &base_images[*idx];
+            let image = &base_images[*idx];
 
-            let file_stem = path.file_stem().unwrap().to_str().unwrap();
+            let size = 640;
+            let file_stem = image.path.file_stem().unwrap().to_str().unwrap();
             let file_name = match op {
-                Transformation::None => format!("{}", file_stem),
-                op => format!("{}_{:?}", file_stem, op),
+                Transformation::None => format!("{}_{}", file_stem, size),
+                op => format!("{}_{}_{:?}", file_stem, size, op),
             };
 
             let cached = cache_dir
@@ -290,7 +335,13 @@ fn main() -> anyhow::Result<()> {
                 .with_extension("jpg");
 
             if !cached.exists() {
-                let src = image::open(path).unwrap();
+                let src = image::io::Reader::open(&image.path)
+                    .unwrap()
+                    .with_guessed_format()
+                    .unwrap()
+                    .decode()
+                    .unwrap();
+                let src = src.resize(size, size, FilterType::Lanczos3);
                 let out = match op {
                     Transformation::FlipHorizontal => src.fliph(),
                     Transformation::FlipVertical => src.flipv(),
@@ -322,11 +373,11 @@ fn main() -> anyhow::Result<()> {
                 .with_extension("txt");
 
             if !labels_out.exists() {
-                let anns: Vec<_> = anns
+                let annotations: Vec<_> = image.annotations
                     .iter()
                     .map(|an| map_ann(*an))
                     .collect();
-                save_labels(&labels_out, &anns);
+                save_labels(&labels_out, &annotations);
             }
         });
     }
