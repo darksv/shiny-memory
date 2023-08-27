@@ -9,24 +9,27 @@ use axum::response::{IntoResponse, Response};
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 
+enum State<T> {
+    WaitingForResult(BoxFuture<'static, T>),
+    WaitingForResponse(Response),
+}
+
 pub(crate) struct DelayedResponse<T> {
-    future: BoxFuture<'static, T>,
+    state: State<T>,
     ticker: tokio::time::Interval,
-    response: Option<Response>,
 }
 
 impl<T: Send + IntoResponse> DelayedResponse<T> {
     pub(crate) fn new(f: impl Future<Output=T> + Send + 'static) -> Self {
         Self {
-            future: Box::pin(f),
+            state: State::WaitingForResult(Box::pin(f)),
             ticker: tokio::time::interval(Duration::from_secs(20)),
-            response: None,
         }
     }
 }
 
 impl<T: Sync + Send + 'static + IntoResponse> IntoResponse for DelayedResponse<T> {
-    fn into_response(self) -> axum::response::Response {
+    fn into_response(self) -> Response {
         self.boxed_unsync().into_response()
     }
 }
@@ -42,13 +45,17 @@ impl<T> HttpBody for DelayedResponse<T>
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
         loop {
-            if let Some(response) = self.response.as_mut() {
-                return pin!(response).poll_data(cx);
-            }
-
-            if let Poll::Ready(result) = self.future.poll_unpin(cx) {
-                self.response = Some(result.into_response());
-                continue;
+            match &mut self.state {
+                State::WaitingForResult(fut) => {
+                    if let Poll::Ready(result) = fut.poll_unpin(cx) {
+                        self.state = State::WaitingForResponse(result.into_response());
+                        // Immediately try to poll the response
+                        continue;
+                    }
+                }
+                State::WaitingForResponse(resp) => {
+                    return pin!(resp).poll_data(cx);
+                }
             }
 
             if self.ticker.poll_tick(cx).is_ready() {
