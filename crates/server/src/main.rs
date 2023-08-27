@@ -1,6 +1,7 @@
 #![feature(array_chunks)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 use std::net::SocketAddr;
@@ -42,6 +43,7 @@ struct AppState {
     default_model_version: u32,
     font: rusttype::Font<'static>,
     environment: Arc<ort::Environment>,
+    class_to_label_studio: HashMap<String, String>,
 }
 
 impl AppState {
@@ -88,6 +90,8 @@ struct Config {
     port: u16,
     #[arg(long, default_value_t = 100)]
     max_image_size_in_mb: u32,
+    #[arg(long)]
+    label_studio_yaml_path: Option<PathBuf>,
 }
 
 struct Model {
@@ -123,6 +127,13 @@ async fn main() -> anyhow::Result<()> {
     let args = Config::parse();
     tracing_subscriber::fmt().init();
 
+    let dataset_config = if let Some(path) = args.label_studio_yaml_path {
+        let yaml = fs::read(path).unwrap();
+        serde_yaml::from_slice(&yaml).unwrap()
+    } else {
+        DatasetConfig::default()
+    };
+
     let environment = ort::Environment::builder()
         .with_name("test")
         .with_log_level(ort::LoggingLevel::Verbose)
@@ -140,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
         max_image_size_in_bytes: args.max_image_size_in_mb * 1024 * 1024,
         default_model_version: args.model_version,
         font,
+        class_to_label_studio: dataset_config.class_to_label_studio,
     };
 
     // Try load default model
@@ -647,11 +659,9 @@ fn to_ls_pos(x: f32) -> f32 {
     (x * 100.0).clamp(0.0, 100.0)
 }
 
-fn remap_label(name: &str) -> &str {
-    match name {
-
-        other => other,
-    }
+#[derive(Deserialize, Default)]
+struct DatasetConfig {
+    class_to_label_studio: HashMap<String, String>,
 }
 
 async fn predict_ls(
@@ -676,7 +686,15 @@ async fn predict_ls(
                         width: to_ls_pos(detection.rect.width() as f32 / width as f32),
                         height: to_ls_pos(detection.rect.height() as f32 / height as f32),
                         rotation: 0.0,
-                        rectanglelabels: vec![remap_label(&model.labels[detection.class_id]).to_string()],
+                        rectanglelabels: {
+                            let class_name = &model.labels[detection.class_id];
+                            vec![
+                                state.class_to_label_studio.get(class_name)
+                                    .as_deref()
+                                    .unwrap_or(class_name)
+                                    .to_string()
+                            ]
+                        },
                     },
                     score: detection.conf,
                     from_name: "label".to_string(),
