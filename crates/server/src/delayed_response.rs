@@ -1,36 +1,26 @@
-use std::cell::Cell;
 use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::pin::{Pin, pin};
 use std::task::Poll;
 use std::time::Duration;
 
 use axum::body::{Bytes, HttpBody};
 use axum::http::HeaderMap;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use futures_util::future::BoxFuture;
-use tokio::sync::oneshot;
-
-type Item = Option<Result<Bytes, axum::Error>>;
+use futures_util::FutureExt;
 
 pub(crate) struct DelayedResponse<T> {
-    future_with_tx: Option<(BoxFuture<'static, T>, oneshot::Sender<Item>)>,
-    rx: oneshot::Receiver<Item>,
-    done: Arc<AtomicBool>,
-    last_send: Cell<std::time::Instant>,
-    interval: Duration,
+    future: BoxFuture<'static, T>,
+    ticker: tokio::time::Interval,
+    response: Option<Response>,
 }
 
 impl<T: Send + IntoResponse> DelayedResponse<T> {
     pub(crate) fn new(f: impl Future<Output=T> + Send + 'static) -> Self {
-        let (tx, rx) = oneshot::channel();
         Self {
-            future_with_tx: Some((Box::pin(f), tx)),
-            rx,
-            done: Arc::new(AtomicBool::new(false)),
-            last_send: Cell::new(std::time::Instant::now()),
-            interval: Duration::from_secs(20),
+            future: Box::pin(f),
+            ticker: tokio::time::interval(Duration::from_secs(20)),
+            response: None,
         }
     }
 }
@@ -51,41 +41,21 @@ impl<T> HttpBody for DelayedResponse<T>
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
-        if self.last_send.get().elapsed() >= self.interval {
-            self.last_send.set(std::time::Instant::now());
-            return Poll::Ready(Some(Ok(Bytes::from("\n"))));
-        }
+        loop {
+            if let Some(response) = self.response.as_mut() {
+                return pin!(response).poll_data(cx);
+            }
 
-        if let Some((future, tx)) = self.future_with_tx.take() {
-            let waker = cx.waker().clone();
-            let response_task = async move {
-                let body = future.await.into_response().data().await;
-                waker.wake();
-                _ = tx.send(body);
-            };
-            let waker = cx.waker().clone();
-            let flag = self.done.clone();
-            let interval = self.interval;
-            let ticker_task = async move {
-                let mut interval = tokio::time::interval(interval);
-                while !flag.load(Ordering::Relaxed) {
-                    interval.tick().await;
-                    waker.wake_by_ref();
-                }
-            };
+            if let Poll::Ready(result) = self.future.poll_unpin(cx) {
+                self.response = Some(result.into_response());
+                continue;
+            }
 
-            tokio::spawn(async move {
-                tokio::join!(response_task, ticker_task)
-            });
+            if self.ticker.poll_tick(cx).is_ready() {
+                return Poll::Ready(Some(Ok(Bytes::from("\n"))));
+            }
 
-            Poll::Pending
-        } else if let Ok(data) = self.rx.try_recv() {
-            self.done.store(true, Ordering::Relaxed);
-            Poll::Ready(data)
-        } else if self.done.load(Ordering::Relaxed) {
-            Poll::Ready(None)
-        } else {
-            Poll::Pending
+            return Poll::Pending;
         }
     }
 
