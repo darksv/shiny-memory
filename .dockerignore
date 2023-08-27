@@ -10,3 +10,6 @@ assets/models
 *.bin
 Cargo.lock
 tmp
+third_party
+docs
+README.md
