@@ -184,6 +184,11 @@ pub(crate) fn decode_video<FrameCallback>(
 
     let context_decoder = codec::context::Context::from_parameters(input_video_stream.parameters())?;
     let mut decoder = context_decoder.decoder().video()?;
+    tracing::info!("input format = {:?}", decoder.format());
+    if decoder.format() == Pixel::None {
+        // prevent ffmpeg crash for some unsupported files
+        anyhow::bail!("unknown video format");
+    }
 
     let mut input_scaler = Context::get(
         decoder.format(),
