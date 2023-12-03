@@ -85,6 +85,8 @@ fn image_into_tensor<const N: u32>(image: &image::RgbImage) -> Option<ndarray::A
     }
 
     let mut out: Vec<f32> = vec![0.0; (N * N * 3) as usize];
+
+    #[allow(clippy::erasing_op)]
     for (x, y, &Rgb([r, g, b])) in image.enumerate_pixels() {
         out[(0 * N * N + N * y + x) as usize] = r as f32 / 255.0;
         out[(1 * N * N + N * y + x) as usize] = g as f32 / 255.0;

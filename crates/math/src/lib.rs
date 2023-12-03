@@ -1,4 +1,3 @@
-use imageproc::drawing::Canvas;
 use imageproc::rect::Rect;
 
 pub struct Point {
@@ -56,7 +55,7 @@ pub fn nms_boxes(boxes: &[impl DetectedBox], overlap_threshold: f32, neighbour_t
                 return true;
             }
 
-            if box1.iou(&box2) > overlap_threshold {
+            if box1.iou(box2) > overlap_threshold {
                 neighbours += 1;
                 false
             } else {
@@ -96,9 +95,8 @@ pub trait DetectedBox {
     }
 
     fn iou(&self, other: &Self) -> f32 {
-        let int_area = self.intersection_area(&other);
-        let union_area = self.union_area(&other);
-        let overlap = int_area as f32 / union_area as f32;
-        overlap
+        let int_area = self.intersection_area(other);
+        let union_area = self.union_area(other);
+        int_area as f32 / union_area as f32
     }
 }

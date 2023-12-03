@@ -5,3 +5,6 @@ members = [
     "crates/tools",
     "crates/math",
 ]
+
+[workspace.lints.clippy]
+identity_op = "allow"

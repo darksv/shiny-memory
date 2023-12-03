@@ -54,7 +54,7 @@ impl AppState {
         }
 
         let path = format!(r"./assets/models/best{version}.onnx");
-        let model: Arc<_> = load_model(&self.environment, &path)?.into();
+        let model: Arc<_> = load_model(&self.environment, path)?.into();
         self.models.write().unwrap().insert(version, model.clone());
         Ok(model)
     }
@@ -347,7 +347,7 @@ fn infer_gif(
             break;
         }
 
-        screen.blit_frame(&frame)?;
+        screen.blit_frame(frame)?;
 
         buf.clear();
         buf.reserve(usize::from(frame.width) * usize::from(frame.height) * 3);
@@ -440,7 +440,7 @@ fn infer_video(
         }
 
         if frame_idx % config.step == 0 {
-            let result = match prediction::predict(&model, frame, frame_idx) {
+            let result = match prediction::predict(model, frame, frame_idx) {
                 Ok(det) => det,
                 Err(e) => {
                     tracing::warn!("error during prediction: {}", e);
@@ -690,7 +690,6 @@ async fn predict_ls(
                             let class_name = &model.labels[detection.class_id];
                             vec![
                                 state.class_to_label_studio.get(class_name)
-                                    .as_deref()
                                     .unwrap_or(class_name)
                                     .to_string()
                             ]
